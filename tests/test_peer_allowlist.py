@@ -1903,3 +1903,27 @@ async def test_add_contact_refusal_after_resolve_carries_the_privacy_text(monkey
 
     assert "restricted by privacy policy" in result
     assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+def test_peer_allowed_active_secondary_username_needs_no_identifier(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    active = types.User(
+        id=304,
+        first_name="Act",
+        username=None,
+        usernames=[types.Username(username="Foo_User", editable=False, active=True)],
+        access_hash=4,
+    )
+
+    assert runtime.peer_allowed(active, runtime.CHAT_ACCESS_READ) is True
+    assert runtime.peer_allowed(active, runtime.CHAT_ACCESS_WRITE) is True
+
+
+@pytest.mark.parametrize("identifier", ["@FOO_USER", "Foo_User", " @foo_user ", "t.me/foo_user"])
+def test_peer_allowed_identifier_case_and_at_sign(monkeypatch, identifier):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+
+    result = runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, identifier)
+
+    # t.me links are cleaned by the tools before the call, not by peer_allowed
+    assert result is (identifier != "t.me/foo_user")
