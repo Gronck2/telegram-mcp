@@ -832,3 +832,223 @@ async def test_member_tools_still_refuse_a_chat_outside_the_allowlist(monkeypatc
     result = await groups.ban_user(chat_id=-1999, user_id=909)
 
     assert "Write access to chat '-1999' is restricted" in result
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage: other peer types, alias candidates, no-allowlist parity
+# ---------------------------------------------------------------------------
+
+SECRET_BOT = types.User(
+    id=202,
+    first_name="Helper",
+    username="helper_bot",
+    bot=True,
+    verified=True,
+    phone="5550000",
+    access_hash=2,
+    photo=types.UserProfilePhoto(photo_id=777, dc_id=1),
+)
+SECRET_GROUP = types.Chat(
+    id=5, title="Secret club", photo=None, participants_count=42, date=None, version=1
+)
+SECRET_CHANNEL = types.Channel(
+    id=6,
+    title="Hidden news",
+    photo=None,
+    date=None,
+    broadcast=True,
+    username="hidden_news",
+    participants_count=999,
+    verified=True,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entity, kind",
+    [(SECRET_BOT, "bot"), (SECRET_GROUP, "group"), (SECRET_CHANNEL, "channel")],
+)
+async def test_get_full_user_public_view_for_bots_groups_and_channels(monkeypatch, entity, kind):
+    cl = AsyncMock()
+
+    async def resolve(identifier, c=None):
+        return entity
+
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="1")
+
+    text = await profile.get_full_user("x")
+    data = json.loads(text)
+
+    assert data["type"] == kind
+    for forbidden in ("5550000", "777", "42", "999", "participants", "phone", "photo"):
+        assert forbidden not in text.replace(str(data["id"]), "")
+    cl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_bot_info_public_view_for_a_real_bot(monkeypatch):
+    cl = AsyncMock()
+
+    async def resolve(identifier, c=None):
+        return SECRET_BOT
+
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="1")
+
+    text = await profile.get_bot_info("helper_bot")
+    info = json.loads(text)["bot_info"]
+
+    assert info["type"] == "bot" and info["bot"] is True and info["badges"] == ["verified"]
+    for key in ("about", "description", "commands", "phone", "bot_commands"):
+        assert key not in info
+    assert "5550000" not in text
+    cl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_privacy_settings_unlisted_user_is_not_expanded(monkeypatch):
+    """A user id missing from settings.users never gains extra fields."""
+    settings = types.account.PrivacyRules(
+        rules=[types.PrivacyValueDisallowUsers(users=[555])], chats=[], users=[]
+    )
+    cl = AsyncMock(return_value=settings)
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="1")
+
+    data = json.loads(await profile.get_privacy_settings())
+
+    assert data["rules"][0]["users"] == [{"id": 555}]
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_ambiguous_name_does_not_leak_hidden_aliases(monkeypatch, actions):
+    runtime.save_aliases({"vanya the dev": {"id": 303, "name": "Hidden Vanya"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101", TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    result = await contacts.set_contact_alias("new nick", "vanya the dev")
+
+    assert "Hidden Vanya" not in result and "303" not in result
+    assert "candidates" not in result
+    assert actions.requests == []
+    assert list(runtime.load_aliases()) == ["vanya the dev"]
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_unchanged_without_allowlist(monkeypatch, actions):
+    saved = await contacts.set_contact_alias("vanya the dev", "@ivan_k")
+
+    assert '"saved": true' in saved.lower().replace('":true', '": true'), saved
+    assert list(runtime.load_aliases()) == ["vanya the dev"]
+
+
+@pytest.mark.asyncio
+async def test_import_contacts_returns_only_a_count(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+    stranger = types.User(id=909, first_name="Zed", phone="79991112233", access_hash=3)
+
+    async def call(request, *args, **kwargs):
+        return types.contacts.ImportedContacts(
+            imported=[types.ImportedContact(user_id=909, client_id=0)],
+            popular_invites=[],
+            retry_contacts=[],
+            users=[stranger],
+        )
+
+    actions.__class__ = type("Importing", (ActionClient,), {"__call__": call})
+
+    result = await contacts.import_contacts([{"phone": "+79991112233", "first_name": "Zed"}])
+
+    assert result == "Imported 1 contacts."
+
+
+@pytest.mark.asyncio
+async def test_add_contact_failure_text_full_inside_read(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="909")
+    friend = types.User(id=909, first_name="Zed", phone="79991112233", access_hash=3)
+
+    async def call(request, *args, **kwargs):
+        return types.contacts.ImportedContacts(
+            imported=[], popular_invites=[], retry_contacts=[], users=[friend]
+        )
+
+    actions.__class__ = type("Failing", (ActionClient,), {"__call__": call})
+
+    result = await contacts.add_contact(phone="+79991112233", first_name="Zed")
+
+    assert "79991112233" in result
+
+
+@pytest.mark.asyncio
+async def test_add_contact_failure_text_unchanged_without_allowlist(monkeypatch, actions):
+    friend = types.User(id=909, first_name="Zed", phone="79991112233", access_hash=3)
+    response = types.contacts.ImportedContacts(
+        imported=[], popular_invites=[], retry_contacts=[], users=[friend]
+    )
+
+    async def call(request, *args, **kwargs):
+        return response
+
+    actions.__class__ = type("Failing", (ActionClient,), {"__call__": call})
+
+    result = await contacts.add_contact(phone="+79991112233", first_name="Zed")
+
+    assert result == f"Contact not added. Response: {response}"
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_group_c_tools_make_exactly_their_own_requests(monkeypatch, actions):
+    await contacts.block_user(user_id=101)
+    await contacts.unblock_user(user_id=101)
+    await contacts.delete_contact(user_id=101)
+    stranger = SimpleNamespace(users=[IVAN], updates=[1])
+    original = actions.__class__.__call__
+
+    async def call(self, request, *args, **kwargs):
+        await original(self, request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return stranger
+        return SimpleNamespace(updates=[1])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert [type(r).__name__ for r in actions.requests] == [
+        "BlockRequest",
+        "UnblockRequest",
+        "DeleteContactsRequest",
+        "ResolveUsernameRequest",
+        "AddContactRequest",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_lookup_tools_are_unchanged(
+    monkeypatch, profile_client, username_client
+):
+    full = json.loads(await profile.get_full_user("ivan_k"))
+    bot = json.loads(await profile.get_bot_info("ivan_k"))
+    status = await profile.get_user_status(user_id=101)
+
+    assert full["phone"] == "79990001122" and full["bio"] == "SECRET-BIO"
+    assert bot["bot_info"]["about"] == "SECRET-BIO"
+    assert "UserStatusOnline" in status
+    # one Telegram call per tool, nothing added by the allowlist code
+    assert profile_client.await_count == 2
+
+    assert json.loads(await chats.resolve_username("@ivan_k"))["phone"] == "79990001122"
+    assert username_client.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_contact_listings_unchanged(client):
+    for name, kwargs in GROUP_A_CALLS:
+        client.requests.clear()
+        result = await getattr(contacts, name)(**kwargs)
+        assert "restricted by privacy policy" not in result
+        assert len(client.requests) == 1
