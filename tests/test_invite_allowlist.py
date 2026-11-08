@@ -21,8 +21,9 @@ def _clean(monkeypatch):
 
 
 class _FakeClient:
-    def __init__(self, check_result):
+    def __init__(self, check_result, import_error=None):
         self.check_result = check_result
+        self.import_error = import_error
         self.checks = 0
         self.imports = 0
 
@@ -34,6 +35,8 @@ class _FakeClient:
             return self.check_result
         if isinstance(request, functions.messages.ImportChatInviteRequest):
             self.imports += 1
+            if self.import_error is not None:
+                raise self.import_error
             return types.Updates(
                 updates=[],
                 users=[],
@@ -222,3 +225,69 @@ async def test_typo_allowlist_refuses_invites(monkeypatch, tool, raw):
     result = await _call(tool, client, monkeypatch)
     assert "restricted by privacy policy" in result
     assert client.imports == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_plain_invite_joins_once_without_allowlist(monkeypatch, tool):
+    client = _FakeClient(_plain())
+    result = await _call(tool, client, monkeypatch)
+    assert "Successfully joined" in result
+    assert client.imports == 1
+    assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_plain_invite_not_reported_as_member_under_wildcard_ok(monkeypatch, tool):
+    """Under an allowlist an unresolvable plain invite is refused, never imported."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1000000000222")
+    client = _FakeClient(_plain())
+    result = await _call(tool, client, monkeypatch)
+    assert "restricted by privacy policy" in result
+    assert client.imports == 0
+    assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+@pytest.mark.parametrize(
+    "err,expected",
+    [
+        ("INVITE_HASH_EXPIRED", "expired"),
+        ("INVITE_HASH_INVALID", "invalid or malformed"),
+    ],
+)
+async def test_check_error_without_allowlist_falls_through_to_import(
+    monkeypatch, tool, err, expected
+):
+    """Pre-existing behaviour: a failing probe is ignored, import reports the error."""
+    client = _FakeClient(RuntimeError(err), import_error=RuntimeError(err))
+    result = await _call(tool, client, monkeypatch)
+    assert expected in result
+    assert client.checks == 1
+    assert client.imports == 1
+
+
+@pytest.mark.asyncio
+async def test_link_check_error_under_allowlist_keeps_friendly_message(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "*")
+    client = _FakeClient(RuntimeError("INVITE_HASH_EXPIRED"))
+    result = await _call("link", client, monkeypatch)
+    assert "expired" in result
+    assert client.imports == 0
+    assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_allowed_peek_import_error_is_reported(monkeypatch, tool):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1000000000222")
+    client = _FakeClient(
+        types.ChatInvitePeek(chat=_channel(222), expires=0),
+        import_error=RuntimeError("INVITE_HASH_EXPIRED"),
+    )
+    result = await _call(tool, client, monkeypatch)
+    assert "expired" in result
+    assert client.imports == 1
+    assert client.checks == 1
