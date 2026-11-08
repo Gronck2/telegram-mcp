@@ -1634,3 +1634,115 @@ async def test_add_contact_alias_does_not_launder_a_hidden_username(monkeypatch,
 
     assert "restricted by privacy" in result
     assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+def _own_account(monkeypatch):
+    own = SimpleNamespace(id=5, is_self=True, username="own_name")
+
+    async def resolve(identifier, c=None):
+        return own
+
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: object())
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["get_message_context", "get_messages", "delete_chat_history"])
+@pytest.mark.parametrize("ref", ["me", "@own_name"])
+async def test_validate_id_tools_refuse_the_own_account_under_a_narrow_allowlist(
+    monkeypatch, tool, ref
+):
+    _own_account(monkeypatch)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+    body, calls = _validated(tool)
+
+    result = await body(chat_id=ref)
+
+    assert calls == []
+    assert "restricted" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool, env",
+    [
+        ("get_messages", "TELEGRAM_ALLOWED_READ_CHATS"),
+        ("delete_chat_history", "TELEGRAM_ALLOWED_WRITE_CHATS"),
+    ],
+)
+async def test_validate_id_own_account_follows_the_modes_of_the_own_id(monkeypatch, tool, env):
+    _own_account(monkeypatch)
+    body, calls = _validated(tool)
+
+    # a wildcard for that mode lets "me" through
+    allow(monkeypatch, **{env: "*"})
+    assert await body(chat_id="me") == "ran"
+
+    # the own id listed for that mode as well
+    monkeypatch.setenv(env, "5")
+    assert await body(chat_id="me") == "ran"
+
+    # a wildcard for the other mode does not
+    other = (
+        "TELEGRAM_ALLOWED_WRITE_CHATS"
+        if env == "TELEGRAM_ALLOWED_READ_CHATS"
+        else "TELEGRAM_ALLOWED_READ_CHATS"
+    )
+    monkeypatch.setenv(env, "101")
+    monkeypatch.setenv(other, "*")
+    assert "restricted" in await body(chat_id="me")
+    assert calls == ["me", "me"]
+
+
+@pytest.mark.asyncio
+async def test_validate_id_own_account_without_allowlist_is_untouched(monkeypatch):
+    _own_account(monkeypatch)
+    body, calls = _validated("get_messages")
+
+    assert await body(chat_id="me") == "ran"
+    assert calls == ["me"]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_username_of_an_allowed_user_still_works(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(users=[IVAN])
+        return SimpleNamespace(updates=[1])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+
+    result = await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert "restricted" not in result and "Error" not in result
+    assert [type(r).__name__ for r in actions.requests] == [
+        "ResolveUsernameRequest",
+        "AddContactRequest",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_username_without_allowlist_makes_only_the_two_calls(
+    monkeypatch, actions
+):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(users=[IVAN])
+        return SimpleNamespace(updates=[1])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    calls = []
+    real = runtime.peer_allowed
+    monkeypatch.setattr(contacts, "peer_allowed", lambda *a, **k: calls.append(a) or real(*a, **k))
+
+    result = await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert "restricted" not in result
+    assert [type(r).__name__ for r in actions.requests] == [
+        "ResolveUsernameRequest",
+        "AddContactRequest",
+    ]
+    assert calls == []
