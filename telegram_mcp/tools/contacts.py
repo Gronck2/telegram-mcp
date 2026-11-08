@@ -836,7 +836,7 @@ async def set_contact_alias(
                         ),
                         "candidates": [
                             {"alias": a, "id": r["id"], "name": r.get("name")}
-                            for a, r in match_aliases(chat_id)[:5]
+                            for a, r in visible_alias_records(match_aliases(chat_id))[:5]
                         ],
                     }
                 )

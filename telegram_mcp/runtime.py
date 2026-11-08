@@ -1493,7 +1493,9 @@ def view_for(entity: Any, full_builder) -> Any:
 
 
 def _is_self_reference(item: Any) -> bool:
-    return isinstance(item, str) and item.strip().lstrip("@").lower() in _SELF_REFS
+    # Exactly what Telethon treats as the own account: the bare strings. "@self" or
+    # "Me" are ordinary usernames/lookups and get the normal peer check.
+    return isinstance(item, str) and item in _SELF_REFS
 
 
 async def _peer_item_allowed(item: Any, access: str, account: Optional[str]) -> bool:
@@ -1505,6 +1507,8 @@ async def _peer_item_allowed(item: Any, access: str, account: Optional[str]) -> 
         cl = get_client(account)
         if cl:
             entity = await resolve_entity(item, cl)
+            if getattr(entity, "is_self", False) is True:
+                return True
             return is_chat_allowed(item, entity, access)
     except Exception:
         pass
@@ -1534,7 +1538,7 @@ async def deny_peer_param(
             continue
         if await _peer_item_allowed(item, access, account):
             continue
-        err = check_chat_access(item, access=access)
+        err = check_chat_access(alias_wording(item) or item, access=access)
         return log_and_format_error(
             func_name,
             ChatAccessDeniedError(err),
@@ -2297,7 +2301,16 @@ def apply_alias(identifier: Union[int, str]) -> Union[int, str]:
     if is_handle_like(identifier):
         return identifier  # a real username/phone/id/self reference is never shadowed
     record = load_aliases().get(alias_key(identifier))
-    return record["id"] if record else identifier
+    if not record:
+        return identifier
+    if is_chat_allowlist_enabled() and not (
+        is_chat_allowed(record["id"], access=CHAT_ACCESS_READ)
+        or is_chat_allowed(record["id"], access=CHAT_ACCESS_WRITE)
+    ):
+        # A contact outside both allowlists is treated as not saved, so its
+        # nickname cannot be used to reach, or be linked to, the hidden person.
+        return identifier
+    return record["id"]
 
 
 class AliasID(int):
@@ -2347,6 +2360,18 @@ class AliasNeedsUser(Exception):
         self.payload = payload
 
 
+def visible_alias_records(items):
+    """Filter alias (alias, record) pairs or a {alias: record} dict by read access.
+
+    No chat allowlist: returned unchanged.
+    """
+    if not is_chat_allowlist_enabled():
+        return items
+    if isinstance(items, dict):
+        return {a: r for a, r in items.items() if is_chat_allowed(r["id"])}
+    return [(a, r) for a, r in items if is_chat_allowed(r["id"])]
+
+
 def alias_ask_payload(reference: str, kind: str = "unknown", stored_id: Optional[int] = None):
     """Build the ask-the-user instruction returned instead of a blind send.
 
@@ -2355,10 +2380,9 @@ def alias_ask_payload(reference: str, kind: str = "unknown", stored_id: Optional
     """
     matches = match_aliases(reference)
     known_records = load_aliases()
-    if is_chat_allowlist_enabled():
-        # Saved contacts outside read access are neither candidates nor listed.
-        matches = [(a, r) for a, r in matches if is_chat_allowed(r["id"])]
-        known_records = {a: r for a, r in known_records.items() if is_chat_allowed(r["id"])}
+    # Saved contacts outside read access are neither candidates nor listed.
+    matches = visible_alias_records(matches)
+    known_records = visible_alias_records(known_records)
     known = sorted(known_records)[:20]
     candidates = [
         {"alias": alias, "id": record["id"], "name": record.get("name")}

@@ -1353,3 +1353,116 @@ async def test_me_in_group_b_tools_under_allowlist(monkeypatch, profile_client):
     for name in ("get_user_photos", "get_user_status"):
         text = await getattr(profile, name)("me")
         assert "restricted by privacy policy" not in text
+
+
+# ---------------------------------------------------------------------------
+# Code-review round 2: "@self", hidden aliases, set_contact_alias candidates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_at_self_is_checked_as_a_username_but_bare_me_self_pass(monkeypatch):
+    other = types.User(id=777, first_name="Not Me", username="self", access_hash=1)
+    seen = []
+
+    async def resolve(identifier, c=None):
+        seen.append(identifier)
+        return other
+
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: object())
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+
+    for ref in ("@self", "@me", "@Self", "Me", "SELF"):
+        denied = await runtime.deny_peer_param("block_user", "user_id", ref, subject=True)
+        assert denied is not None and "restricted by privacy" in denied, ref
+    for ref in ("me", "self"):
+        assert await runtime.deny_peer_param("block_user", "user_id", ref, subject=True) is None
+    assert seen == ["@self", "@me", "@Self", "Me", "SELF"]
+
+
+@pytest.mark.asyncio
+async def test_at_self_resolving_to_the_own_account_is_allowed(monkeypatch):
+    own = SimpleNamespace(id=5, is_self=True)
+
+    async def resolve(identifier, c=None):
+        return own
+
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: object())
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+
+    assert await runtime.deny_peer_param("block_user", "user_id", "@x_own", subject=True) is None
+
+
+@pytest.mark.asyncio
+async def test_hidden_alias_is_not_resolved_by_lookup_tools(monkeypatch, actions):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Hidden Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    assert runtime.apply_alias("лена") == "лена"
+    for name in ("get_full_user", "get_bot_info"):
+        text = await getattr(profile, name)("лена")
+        assert "Hidden Lena" not in text and "303" not in text, name
+    assert actions.requests == []
+
+
+@pytest.mark.asyncio
+async def test_write_only_alias_still_resolves(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="303", TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    assert runtime.apply_alias("лена") == 303
+
+
+def test_alias_unchanged_without_allowlist():
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+
+    assert runtime.apply_alias("лена") == 303
+
+
+@pytest.mark.asyncio
+async def test_denial_text_names_the_wording_not_the_stored_id(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="303", TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    denied = await runtime.deny_peer_param(
+        "get_full_user", "user_id", runtime.AliasID(303, "лена"), subject=True
+    )
+
+    assert denied is not None and "лена" in denied and "303" not in denied
+
+
+@pytest.mark.asyncio
+async def test_stale_hidden_alias_gives_no_stored_id(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Hidden Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    async def dead(*args, **kwargs):
+        raise ValueError("nope")
+
+    monkeypatch.setattr(runtime, "_resolve_with_retries", dead)
+
+    with pytest.raises(runtime.AliasNeedsUser) as caught:
+        await runtime.resolve_entity("лена", object())
+
+    payload = caught.value.payload
+    assert "303" not in payload and "Hidden Lena" not in payload and "stale" not in payload
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_ambiguous_candidates_filtered_with_write_star(
+    monkeypatch, actions
+):
+    runtime.save_aliases(
+        {
+            "vanya the hidden": {"id": 303, "name": "Hidden Vanya"},
+            "vanya the open": {"id": 101, "name": "Open Vanya"},
+        }
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="*", TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    result = await contacts.set_contact_alias("new nick", "vanya the")
+
+    assert "Hidden Vanya" not in result and "303" not in result and "the hidden" not in result
+    assert "Open Vanya" in result
