@@ -65,3 +65,16 @@ chat, who is rarely on any list.
   simpler and owner-approved.
 - Building the public view by stripping fields from the full output: new
   Telethon fields would leak by default.
+
+## Addendum (code review round 1)
+
+- The owner's own account (`is_self`) always counts as allowed in
+  `peer_allowed`: it is not "another conversation", so the group B lookup tools
+  return full output for `"me"` under an allowlist, consistent with
+  `get_user_status` and `get_user_photos`.
+- Saved aliases outside read access are dropped from the ask-the-user payload
+  (`candidates`, `known_aliases`) and from the `alias_already_used` answer of
+  `set_contact_alias`, whose `resolved` field follows the public-view rule.
+- `get_privacy_settings` maps rule chat ids to the chat objects of the response
+  (basic group or channel), keeps those inside read access and prints marked
+  ids; ids without an object are dropped.

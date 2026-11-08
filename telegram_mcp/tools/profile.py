@@ -111,6 +111,9 @@ def _privacy_settings_text(settings) -> str:
     if not is_chat_allowlist_enabled():
         return str(settings)
     users = {user.id: user for user in getattr(settings, "users", None) or []}
+    # Rule chat ids are bare ids (basic group or channel); ids without an object
+    # in settings.chats cannot be classified and are dropped.
+    chats = {chat.id: chat for chat in getattr(settings, "chats", None) or []}
     rules = []
     for rule in getattr(settings, "rules", None) or []:
         entry: Dict[str, Any] = {"rule": type(rule).__name__}
@@ -126,7 +129,11 @@ def _privacy_settings_text(settings) -> str:
             ]
         chat_ids = getattr(rule, "chats", None)
         if chat_ids is not None:
-            entry["chats"] = [cid for cid in chat_ids if is_chat_allowed(-cid)]
+            entry["chats"] = [
+                get_marked_id(chats[cid])
+                for cid in chat_ids
+                if cid in chats and peer_allowed(chats[cid])
+            ]
         rules.append(entry)
     return json.dumps({"rules": rules}, indent=2, ensure_ascii=False)
 

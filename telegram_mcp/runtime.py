@@ -1408,6 +1408,9 @@ def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
     """
     if not is_chat_allowlist_enabled():
         return True
+    if getattr(entity, "is_self", False) is True:
+        # The owner's own account is not "another conversation" (ADR 0002).
+        return True
     try:
         marked_id = get_marked_id(entity)
     except Exception:
@@ -2351,7 +2354,12 @@ def alias_ask_payload(reference: str, kind: str = "unknown", stored_id: Optional
     Telegram-supplied name stays quarantined inside the candidates list.
     """
     matches = match_aliases(reference)
-    known = sorted(load_aliases())[:20]
+    known_records = load_aliases()
+    if is_chat_allowlist_enabled():
+        # Saved contacts outside read access are neither candidates nor listed.
+        matches = [(a, r) for a, r in matches if is_chat_allowed(r["id"])]
+        known_records = {a: r for a, r in known_records.items() if is_chat_allowed(r["id"])}
+    known = sorted(known_records)[:20]
     candidates = [
         {"alias": alias, "id": record["id"], "name": record.get("name")}
         for alias, record in matches[:5]

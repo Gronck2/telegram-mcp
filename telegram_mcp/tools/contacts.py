@@ -759,6 +759,23 @@ async def send_contact(
         return log_and_format_error("send_contact", e, chat_id=chat_id, phone_number=phone_number)
 
 
+def _alias_already_used(key: str, existing: dict) -> str:
+    """Refusal to repoint ``key``; the current target is named only inside read access."""
+    readable = is_chat_allowed(existing["id"])
+    target = (existing.get("name") or existing["id"]) if readable else "another contact"
+    result = {
+        "saved": False,
+        "reason": "alias_already_used",
+        "detail": (
+            f"'{key}' already points at {target}. Confirm with the user, then call again "
+            "with replace=True."
+        ),
+    }
+    if readable:
+        result["current"] = existing
+    return format_tool_result(result)
+
+
 @mcp.tool(annotations=ToolAnnotations(title="Set Contact Alias", openWorldHint=True))
 @with_account(readonly=False)
 # The remembered contact is a person the agent will act on: write access.
@@ -848,24 +865,15 @@ async def set_contact_alias(
         def _store(aliases):
             existing = aliases.get(key)
             if existing and existing["id"] != marked_id and not replace:
-                return format_tool_result(
-                    {
-                        "saved": False,
-                        "reason": "alias_already_used",
-                        "detail": (
-                            f"'{key}' already points at "
-                            f"{existing.get('name') or existing['id']}. Confirm with the "
-                            "user, then call again with replace=True."
-                        ),
-                        "current": existing,
-                    }
-                )
+                return _alias_already_used(key, existing)
             aliases[key] = {
                 "id": marked_id,
                 "name": formatted.get("name"),
                 "account": account or "default",
             }
-            return format_tool_result({"saved": True, "alias": key, "resolved": formatted})
+            return format_tool_result(
+                {"saved": True, "alias": key, "resolved": view_for(entity, lambda: formatted)}
+            )
 
         return update_aliases(_store)
     except AliasStoreUnreadable:

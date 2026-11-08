@@ -270,7 +270,7 @@ async def test_list_contact_aliases_filters_by_read_access(monkeypatch):
     runtime.save_aliases(
         {
             "ivan": {"id": 101, "name": "Ivan"},
-            "vanya": {"id": 101, "name": "Ivan"},
+            "vanya the dev": {"id": 101, "name": "Ivan"},
             "secret": {"id": 303, "name": "Secret"},
         }
     )
@@ -279,7 +279,7 @@ async def test_list_contact_aliases_filters_by_read_access(monkeypatch):
     data = json.loads(await contacts.list_contact_aliases())
 
     assert [row["id"] for row in data["results"]] == [101]
-    assert sorted(data["results"][0]["aliases"]) == ["ivan", "vanya"]
+    assert sorted(data["results"][0]["aliases"]) == ["ivan", "vanya the dev"]
     assert "Secret" not in json.dumps(data) and "303" not in json.dumps(data)
     assert "hidden" not in json.dumps(data).lower()
 
@@ -538,6 +538,28 @@ async def test_resolve_phone_without_user_under_allowlist_does_not_dump_result(m
     assert await contacts.resolve_phone("+7 999 000 1122") == contacts.NO_PHONE_USER_MESSAGE
 
 
+CHAT_KW = dict(participants_count=1, date=None, version=1, photo=types.ChatPhotoEmpty())
+
+
+@pytest.mark.asyncio
+async def test_get_privacy_settings_handles_channels_and_unknown_chats(monkeypatch):
+    chan = types.Channel(id=77, title="C", photo=types.ChatPhotoEmpty(), date=None, access_hash=1)
+    other = types.Channel(id=78, title="D", photo=types.ChatPhotoEmpty(), date=None, access_hash=1)
+    settings = types.account.PrivacyRules(
+        rules=[types.PrivacyValueAllowChatParticipants(chats=[77, 78, 79])],
+        chats=[chan, other],
+        users=[],
+    )
+    cl = AsyncMock(return_value=settings)
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="-1000000000077")
+
+    data = json.loads(await profile.get_privacy_settings())
+
+    assert data["rules"][0]["chats"] == [-1000000000077]
+
+
 @pytest.mark.asyncio
 async def test_get_privacy_settings_shows_public_view_for_outside_users(monkeypatch):
     other = types.User(id=303, first_name="Zed", phone="333", access_hash=3)
@@ -547,7 +569,7 @@ async def test_get_privacy_settings_shows_public_view_for_outside_users(monkeypa
             types.PrivacyValueDisallowChatParticipants(chats=[5, 6]),
             types.PrivacyValueAllowContacts(),
         ],
-        chats=[],
+        chats=[types.Chat(**CHAT_KW, id=5, title="A"), types.Chat(**CHAT_KW, id=6, title="B")],
         users=[RICH, other],
     )
     cl = AsyncMock(return_value=settings)
@@ -562,7 +584,7 @@ async def test_get_privacy_settings_shows_public_view_for_outside_users(monkeypa
     assert allow_users[0]["phone"] == "79990001122"  # inside read: full
     assert allow_users[1] == runtime.public_view(other)  # outside read: public view
     assert "333" not in text
-    assert data["rules"][1]["chats"] == [5]
+    assert data["rules"][1]["chats"] == [-5]
     assert data["rules"][2] == {"rule": "PrivacyValueAllowContacts"}
 
 
@@ -1052,3 +1074,82 @@ async def test_no_allowlist_contact_listings_unchanged(client):
         result = await getattr(contacts, name)(**kwargs)
         assert "restricted by privacy policy" not in result
         assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_alias_ask_payload_hides_aliases_outside_read_access(monkeypatch):
+    runtime.save_aliases(
+        {
+            "boss visible": {"id": 101, "name": "Visible"},
+            "boss hidden": {"id": 303, "name": "Hidden Boss"},
+        }
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    payload = json.loads(runtime.alias_ask_payload("boss"))
+    text = json.dumps(payload)
+
+    assert "Hidden Boss" not in text and "boss hidden" not in text and "303" not in text
+    assert payload["known_aliases"] == ["boss visible"]
+    assert [c["id"] for c in payload["candidates"]] == [101]
+
+
+@pytest.mark.asyncio
+async def test_alias_ask_payload_unchanged_without_allowlist():
+    runtime.save_aliases({"boss hidden": {"id": 303, "name": "Hidden Boss"}})
+
+    payload = json.loads(runtime.alias_ask_payload("boss"))
+
+    assert payload["known_aliases"] == ["boss hidden"]
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_already_used_hides_outside_read_record(monkeypatch, actions):
+    runtime.save_aliases({"vanya the dev": {"id": 303, "name": "Hidden Boss", "account": "acc"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101", TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    text = await contacts.set_contact_alias("vanya the dev", "101")
+    data = json.loads(text)["results"]
+
+    assert data["reason"] == "alias_already_used"
+    assert "current" not in data
+    assert "Hidden Boss" not in text and "303" not in text
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_already_used_shows_readable_record(monkeypatch, actions):
+    runtime.save_aliases({"vanya the dev": {"id": 303, "name": "Zed"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101", TELEGRAM_ALLOWED_READ_CHATS="101,303")
+
+    data = json.loads(await contacts.set_contact_alias("vanya the dev", "101"))["results"]
+
+    assert data["current"]["id"] == 303
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_resolved_is_public_view_outside_read(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101", TELEGRAM_ALLOWED_READ_CHATS="5")
+
+    text = await contacts.set_contact_alias("vanya the dev", "101")
+
+    assert json.loads(text)["results"]["saved"] is True
+    assert "7999" not in text
+    assert "79990001122" not in text
+
+
+@pytest.mark.asyncio
+async def test_own_account_is_full_view_for_lookup_tools(monkeypatch, profile_client):
+    me = types.User(id=900, first_name="Me", phone="79991112233", is_self=True, access_hash=9)
+    profile_client.return_value = SimpleNamespace(
+        users=[me], full_user=full_user_response().full_user
+    )
+
+    async def resolve(identifier, c=None):
+        return me
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    text = await profile.get_full_user("me")
+
+    assert "SECRET-BIO" in text
