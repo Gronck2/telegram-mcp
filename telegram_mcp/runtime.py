@@ -1398,6 +1398,149 @@ def check_chat_access(
     )
 
 
+def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
+    """True if ``entity`` (user, group or channel) is allowed for ``access``.
+
+    A user is judged as their private chat (marked id = user id). With no chat
+    allowlist configured this is always True. An entity whose id cannot be
+    read is treated as not allowed.
+    """
+    if not is_chat_allowlist_enabled():
+        return True
+    try:
+        marked_id = get_marked_id(entity)
+    except Exception:
+        return False
+    return is_chat_allowed(marked_id, entity, access)
+
+
+def read_access_restricted() -> bool:
+    """True if some chats are hidden from read access.
+
+    That is the case when a chat allowlist is configured and the effective read
+    list has no ``*`` wildcard. With read access to every chat nothing is hidden.
+    """
+    allowed = get_chat_allowlist(CHAT_ACCESS_READ)
+    return allowed is not None and CHAT_ALLOWLIST_WILDCARD not in allowed
+
+
+def refuse_if_read_restricted(tool_name: str) -> Optional[str]:
+    """Return the privacy error for a tool that lists the whole contact book.
+
+    None when read access is not restricted (see ``read_access_restricted``).
+    """
+    if not read_access_restricted():
+        return None
+    err = (
+        f"Read access is restricted by privacy policy (TELEGRAM_ALLOWED_CHAT_IDS / "
+        f"{_CHAT_ACCESS_ENV[CHAT_ACCESS_READ]}): {tool_name} would expose contacts "
+        "outside the allowed chats."
+    )
+    return log_and_format_error(
+        tool_name, ChatAccessDeniedError(err), prefix=ErrorCategory.PRIVACY, user_message=err
+    )
+
+
+def _public_usernames(entity: Any) -> tuple[Optional[str], list]:
+    primary = getattr(entity, "username", None)
+    extra = [
+        u.username
+        for u in (getattr(entity, "usernames", None) or [])
+        if getattr(u, "username", None) and u.username != primary
+    ]
+    return primary, extra
+
+
+def public_view(entity: Any) -> Dict[str, Any]:
+    """What a tool may say about a peer outside read access.
+
+    Built from an explicit list of fields, never by copying an entity and
+    removing some: id, type (user, bot, group, channel), name or title,
+    username(s), bot flag and badges (verified, scam, fake, premium). New
+    Telethon fields stay hidden by default.
+    """
+    view: Dict[str, Any] = {"id": get_marked_id(entity)}
+    if isinstance(entity, User):
+        is_bot = bool(getattr(entity, "bot", False))
+        view["type"] = "bot" if is_bot else "user"
+        view["bot"] = is_bot
+        view["first_name"] = sanitize_name(getattr(entity, "first_name", None))
+        view["last_name"] = sanitize_name(getattr(entity, "last_name", None))
+    else:
+        is_group = isinstance(entity, Chat) or bool(getattr(entity, "megagroup", False))
+        view["type"] = "group" if is_group else "channel"
+        view["title"] = sanitize_name(getattr(entity, "title", None))
+    primary, extra = _public_usernames(entity)
+    if primary:
+        view["username"] = primary
+    if extra:
+        view["additional_usernames"] = extra
+    view["badges"] = [
+        badge
+        for badge in ("verified", "scam", "fake", "premium")
+        if getattr(entity, badge, False) is True
+    ]
+    return view
+
+
+def view_for(entity: Any, full_builder) -> Any:
+    """``full_builder()`` for a peer inside read access, else its public view."""
+    return full_builder() if peer_allowed(entity, CHAT_ACCESS_READ) else public_view(entity)
+
+
+def _is_self_reference(item: Any) -> bool:
+    return isinstance(item, str) and item.strip().lstrip("@").lower() in _SELF_REFS
+
+
+async def _peer_item_allowed(item: Any, access: str, account: Optional[str]) -> bool:
+    if is_chat_allowed(item, access=access):
+        return True
+    if not isinstance(item, str):
+        return False
+    try:
+        cl = get_client(account)
+        if cl:
+            entity = await resolve_entity(item, cl)
+            return is_chat_allowed(item, entity, access)
+    except Exception:
+        pass
+    return False
+
+
+async def deny_peer_param(
+    func_name: str,
+    param_name: str,
+    value: Any,
+    account: Optional[str] = None,
+    subject: bool = False,
+) -> Optional[str]:
+    """Return a logged privacy error if ``value`` names a peer the tool may not use.
+
+    ``value`` is an ID, username or alias, or a list of them. The mode (read or
+    write) comes from the tool's annotations. With ``subject`` the parameter
+    names a user acted on, which is judged as that user's private chat; "me" is
+    then always allowed (the own account). None means allowed. Callers check
+    ``is_chat_allowlist_enabled()`` first or accept the cheap no-op here.
+    """
+    if not is_chat_allowlist_enabled():
+        return None
+    access = chat_access_for_tool(func_name, param_name)
+    for item in value if isinstance(value, list) else [value]:
+        if subject and _is_self_reference(item):
+            continue
+        if await _peer_item_allowed(item, access, account):
+            continue
+        err = check_chat_access(item, access=access)
+        return log_and_format_error(
+            func_name,
+            ChatAccessDeniedError(err),
+            prefix=ErrorCategory.PRIVACY,
+            user_message=err,
+            **{param_name: value},
+        )
+    return None
+
+
 # Error code prefix mapping for better error tracing
 class ErrorCategory(str, Enum):
     CHAT = "CHAT"
@@ -1543,13 +1686,16 @@ def log_and_format_error(
     return f"An error occurred (code: {error_code})."
 
 
-def validate_id(*param_names_to_validate, raise_errors=False):
+def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False):
     """
     Decorator to validate chat_id and user_id parameters, including lists of IDs.
     It checks for valid integer ranges, string representations of integers,
     and username formats.
     Set raise_errors to surface validation/privacy failures as MCP tool errors;
     other tools retain their existing return contract by default.
+    Set peer_subject for parameters that name a user or peer the tool acts on or
+    looks up (not a member inside an already-checked chat): the named peer's
+    private chat must then be allowed, in the mode the tool needs.
     """
 
     def error_result(message):
@@ -1640,35 +1786,18 @@ def validate_id(*param_names_to_validate, raise_errors=False):
                     kwargs[param_name] = validated_value
 
                 # Per-chat privacy allowlist enforcement
-                if is_chat_allowlist_enabled() and param_name in CHAT_PARAM_NAMES:
-                    access = chat_access_for_tool(func.__name__, param_name)
-                    check_target = kwargs[param_name]
-                    target_items = (
-                        check_target if isinstance(check_target, list) else [check_target]
+                if is_chat_allowlist_enabled() and (
+                    peer_subject or param_name in CHAT_PARAM_NAMES
+                ):
+                    denied = await deny_peer_param(
+                        func.__name__,
+                        param_name,
+                        kwargs[param_name],
+                        kwargs.get("account"),
+                        subject=peer_subject,
                     )
-                    for item in target_items:
-                        if not is_chat_allowed(item, access=access):
-                            resolved_allowed = False
-                            if isinstance(item, str):
-                                try:
-                                    cl = get_client(kwargs.get("account"))
-                                    if cl:
-                                        ent = await resolve_entity(item, cl)
-                                        if is_chat_allowed(item, ent, access):
-                                            resolved_allowed = True
-                                except Exception:
-                                    pass
-                            if not resolved_allowed:
-                                err = check_chat_access(item, access=access)
-                                return error_result(
-                                    log_and_format_error(
-                                        func.__name__,
-                                        ChatAccessDeniedError(err),
-                                        prefix=ErrorCategory.PRIVACY,
-                                        user_message=err,
-                                        **{param_name: param_value},
-                                    )
-                                )
+                    if denied is not None:
+                        return error_result(denied)
 
             return await func(*args, **kwargs)
 
