@@ -415,6 +415,68 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
         )
 
 
+async def _add_contact_by_username(cl, account, username, first_name, last_name) -> str:
+    """add_contact for a Telegram username (contacts.addContact, no phone number)."""
+    # Remove @ if present
+    username_clean = username.lstrip("@")
+    if not username_clean:
+        return "Error: Username cannot be empty."
+
+    # Acting on a user needs write access to that user's private chat.
+    denied = await deny_peer_param(
+        "add_contact", "username", username_clean, account, subject=True
+    )
+    if denied:
+        return denied
+
+    # Resolve username to get user information
+    try:
+        resolve_result = await cl(
+            functions.contacts.ResolveUsernameRequest(username=username_clean)
+        )
+
+        # Extract user from the result
+        if not resolve_result.users:
+            return f"Error: User with username @{username_clean} not found."
+
+        user = resolve_result.users[0]
+        if not isinstance(user, User):
+            return "Error: Resolved entity is not a user."
+
+        # Use contacts.addContact to add the contact by user ID
+        from telethon.tl.types import InputUser
+
+        result = await cl(
+            functions.contacts.AddContactRequest(
+                id=InputUser(user_id=user.id, access_hash=user.access_hash),
+                first_name=first_name,
+                last_name=last_name,
+                phone="",  # Empty phone for username-based contacts
+            )
+        )
+
+        if hasattr(result, "updates") and result.updates:
+            return f"Contact {first_name} {last_name} (@{username_clean}) added successfully."
+        return (
+            f"Contact {first_name} {last_name} (@{username_clean}) "
+            "added successfully (no updates returned)."
+        )
+    except Exception as resolve_e:
+        return log_and_format_error("add_contact", resolve_e, username=username_clean)
+
+
+def _import_failure_text(prefix: str, result) -> str:
+    """ "<prefix> <response>"; with a chat allowlist, users outside read access are public view."""
+    if not is_chat_allowlist_enabled():
+        return f"{prefix} {str(result)}"
+    users = [
+        view_for(user, lambda user=user: format_entity(user))
+        for user in getattr(result, "users", None) or []
+    ]
+    imported = len(getattr(result, "imported", None) or [])
+    return f"{prefix} " + json.dumps({"imported": imported, "users": users}, ensure_ascii=False)
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Add Contact", openWorldHint=True, destructiveHint=True, idempotentHint=True
@@ -455,52 +517,7 @@ async def add_contact(
 
         # If username is provided, use it for username-based contact addition
         if username:
-            # Remove @ if present
-            username_clean = username.lstrip("@")
-            if not username_clean:
-                return "Error: Username cannot be empty."
-
-            # Resolve username to get user information
-            try:
-                resolve_result = await cl(
-                    functions.contacts.ResolveUsernameRequest(username=username_clean)
-                )
-
-                # Extract user from the result
-                if not resolve_result.users:
-                    return f"Error: User with username @{username_clean} not found."
-
-                user = resolve_result.users[0]
-                if not isinstance(user, User):
-                    return "Error: Resolved entity is not a user."
-
-                user_id = user.id
-                access_hash = user.access_hash
-
-                # Use contacts.addContact to add the contact by user ID
-                from telethon.tl.types import InputUser
-
-                result = await cl(
-                    functions.contacts.AddContactRequest(
-                        id=InputUser(user_id=user_id, access_hash=access_hash),
-                        first_name=first_name,
-                        last_name=last_name,
-                        phone="",  # Empty phone for username-based contacts
-                    )
-                )
-
-                if hasattr(result, "updates") and result.updates:
-                    return (
-                        f"Contact {first_name} {last_name} (@{username_clean}) added successfully."
-                    )
-                else:
-                    return (
-                        f"Contact {first_name} {last_name} (@{username_clean}) "
-                        "added successfully (no updates returned)."
-                    )
-
-            except Exception as resolve_e:
-                return log_and_format_error("add_contact", resolve_e, username=username_clean)
+            return await _add_contact_by_username(cl, account, username, first_name, last_name)
 
         elif phone:
             # Original phone-based contact addition
@@ -521,7 +538,7 @@ async def add_contact(
             if result.imported:
                 return f"Contact {first_name} {last_name} added successfully."
             else:
-                return f"Contact not added. Response: {str(result)}"
+                return _import_failure_text("Contact not added. Response:", result)
         else:
             return "Error: Phone number is required when username is not provided."
     except (ImportError, AttributeError) as type_err:
@@ -543,7 +560,9 @@ async def add_contact(
                 if hasattr(result, "imported") and result.imported:
                     return f"Contact {first_name} {last_name} added successfully (alt method)."
                 else:
-                    return f"Contact not added. Alternative method response: {str(result)}"
+                    return _import_failure_text(
+                        "Contact not added. Alternative method response:", result
+                    )
             except Exception as alt_e:
                 return log_and_format_error("add_contact", alt_e, phone=phone)
         else:
@@ -558,7 +577,7 @@ async def add_contact(
     )
 )
 @with_account(readonly=False)
-@validate_id("user_id")
+@validate_id("user_id", peer_subject=True)
 async def delete_contact(user_id: Union[int, str], account: Optional[str] = None) -> str:
     """
     Delete a contact by user ID.
@@ -580,7 +599,7 @@ async def delete_contact(user_id: Union[int, str], account: Optional[str] = None
     )
 )
 @with_account(readonly=False)
-@validate_id("user_id")
+@validate_id("user_id", peer_subject=True)
 async def block_user(user_id: Union[int, str], account: Optional[str] = None) -> str:
     """
     Block a user by user ID.
@@ -602,7 +621,7 @@ async def block_user(user_id: Union[int, str], account: Optional[str] = None) ->
     )
 )
 @with_account(readonly=False)
-@validate_id("user_id")
+@validate_id("user_id", peer_subject=True)
 async def unblock_user(user_id: Union[int, str], account: Optional[str] = None) -> str:
     """
     Unblock a user by user ID.
@@ -742,6 +761,8 @@ async def send_contact(
 
 @mcp.tool(annotations=ToolAnnotations(title="Set Contact Alias", openWorldHint=True))
 @with_account(readonly=False)
+# The remembered contact is a person the agent will act on: write access.
+@require_peer_access("chat_id", subject=False)
 async def set_contact_alias(
     alias: str, chat_id: str, replace: bool = False, account: Optional[str] = None
 ) -> str:

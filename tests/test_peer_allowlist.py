@@ -9,7 +9,7 @@ from telethon import functions, types
 
 import main
 from telegram_mcp import runtime
-from telegram_mcp.tools import chats, contacts, profile
+from telegram_mcp.tools import chats, contacts, messages, profile
 
 ENV_VARS = (
     "TELEGRAM_ALLOWED_CHAT_IDS",
@@ -576,3 +576,213 @@ async def test_get_privacy_settings_unchanged_without_allowlist(monkeypatch):
     monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
 
     assert await profile.get_privacy_settings() == str(settings)
+
+
+# ---------------------------------------------------------------------------
+# Group C: acting on a peer needs write access to the user's private chat
+# ---------------------------------------------------------------------------
+
+
+class ActionClient:
+    """Records requests; answers every call with a harmless result."""
+
+    def __init__(self):
+        self.requests = []
+
+    async def __call__(self, request, *args, **kwargs):
+        self.requests.append(request)
+        return SimpleNamespace(updates=[1], imported=[], users=[], rules=[], chats=[], peer=None)
+
+    async def get_me(self):
+        return SimpleNamespace(bot=False)
+
+
+@pytest.fixture
+def actions(monkeypatch):
+    cl = ActionClient()
+
+    async def resolve(identifier, c=None):
+        if identifier in (101, "101", "ivan_k", "@ivan_k"):
+            return IVAN
+        raise ValueError("unknown")
+
+    async def connected(c=None):
+        return None
+
+    for module in (contacts, profile, messages, runtime):
+        monkeypatch.setattr(module, "get_client", lambda account=None: cl)
+        monkeypatch.setattr(module, "resolve_entity", resolve)
+    for module in (contacts, profile):
+        monkeypatch.setattr(module, "ensure_connected", connected)
+    return cl
+
+
+USER_ACTIONS = [
+    (contacts, "block_user", {"user_id": 101}),
+    (contacts, "unblock_user", {"user_id": 101}),
+    (contacts, "delete_contact", {"user_id": 101}),
+    (profile, "set_privacy_settings", {"key": "phone", "allow_users": [101]}),
+    (profile, "set_privacy_settings", {"key": "phone", "disallow_users": [101]}),
+    (contacts, "add_contact", {"username": "ivan_k", "first_name": "Ivan"}),
+    (
+        profile,
+        "set_bot_commands",
+        {"bot_username": "ivan_k", "commands": [{"command": "a", "description": "b"}]},
+    ),
+    (contacts, "set_contact_alias", {"alias": "vanya the dev", "chat_id": "@ivan_k"}),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module, name, kwargs", USER_ACTIONS)
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TELEGRAM_ALLOWED_CHAT_IDS": "5"},
+        {"TELEGRAM_ALLOWED_READ_CHATS": "*,101", "TELEGRAM_ALLOWED_WRITE_CHATS": "5"},
+        {"TELEGRAM_ALLOWED_READ_CHATS": "101"},
+    ],
+)
+async def test_acting_on_user_without_write_access_is_refused(
+    monkeypatch, actions, module, name, kwargs, env
+):
+    allow(monkeypatch, **env)
+
+    result = await getattr(module, name)(**kwargs)
+
+    assert "Write access" in result and "restricted by privacy policy" in result
+    assert actions.requests == []
+    assert runtime.load_aliases() == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module, name, kwargs", USER_ACTIONS)
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"TELEGRAM_ALLOWED_WRITE_CHATS": "101"},
+        {"TELEGRAM_ALLOWED_WRITE_CHATS": "@ivan_k"},
+        {"TELEGRAM_ALLOWED_CHAT_IDS": "*"},
+    ],
+)
+async def test_acting_on_user_with_write_access_proceeds(
+    monkeypatch, actions, module, name, kwargs, env
+):
+    allow(monkeypatch, **env)
+    if "@ivan_k" in env.get("TELEGRAM_ALLOWED_WRITE_CHATS", ""):
+        # the same user named by username instead of id
+        kwargs = {
+            k: (
+                "@ivan_k" if v == 101 else ["@ivan_k"] if isinstance(v, list) and v == [101] else v
+            )
+            for k, v in kwargs.items()
+        }
+
+    result = await getattr(module, name)(**kwargs)
+
+    assert "restricted by privacy policy" not in result
+
+
+@pytest.mark.asyncio
+async def test_acting_requests_reach_telegram_with_write_access(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101")
+
+    assert await contacts.block_user(user_id=101) == "User 101 blocked."
+    assert [type(r).__name__ for r in actions.requests] == ["BlockRequest"]
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_checks_chat_id_before_saving(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101")
+
+    saved = await contacts.set_contact_alias("vanya the dev", "101")
+    assert '"saved": true' in saved.lower().replace('":true', '": true')
+
+    denied = await contacts.set_contact_alias("other dev", "303")
+    assert "restricted by privacy policy" in denied
+    assert list(runtime.load_aliases()) == ["vanya the dev"]
+
+
+@pytest.mark.asyncio
+async def test_set_default_send_as_checks_send_as_but_not_me(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="-1001,-1002")
+
+    denied = await messages.set_default_send_as(chat_id=-1001, send_as=-1003)
+    assert "Write access to chat '-1003' is restricted" in denied
+    assert actions.requests == []
+
+    # "me" is the own account: always allowed as a sender (chat checked separately)
+    runtime_check = await runtime.deny_peer_param(
+        "set_default_send_as", "send_as", "me", subject=True
+    )
+    assert runtime_check is None
+    denied_chat = await messages.set_default_send_as(chat_id=-1009, send_as="me")
+    assert "Write access to chat '-1009' is restricted" in denied_chat
+
+
+@pytest.mark.asyncio
+async def test_set_default_send_as_allowed_sender_proceeds(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="-1001,-1002")
+
+    async def resolve_input(identifier, c=None):
+        return types.InputPeerChannel(1, 2) if identifier == -1001 else types.InputPeerSelf()
+
+    monkeypatch.setattr(messages, "resolve_input_entity", resolve_input)
+
+    result = await messages.set_default_send_as(chat_id=-1001, send_as="me")
+
+    assert result == f"Default sender in chat -1001 set to {messages.SEND_AS_SELF_LABEL}."
+
+
+@pytest.mark.asyncio
+async def test_forward_message_send_as_needs_write_access(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="-1001,-1002")
+
+    denied = await messages.forward_message(
+        from_chat_id=-1001, message_id=1, to_chat_id=-1002, send_as=-1003
+    )
+
+    assert "Write access to chat '-1003' is restricted" in denied
+    assert actions.requests == []
+
+
+@pytest.mark.asyncio
+async def test_add_contact_by_phone_and_import_contacts_are_not_gated(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    added = await contacts.add_contact(phone="+79990001122", first_name="Zed")
+    imported = await contacts.import_contacts([{"phone": "+79990001122", "first_name": "Zed"}])
+
+    assert "restricted by privacy policy" not in added + imported
+    assert [type(r).__name__ for r in actions.requests] == [
+        "ImportContactsRequest",
+        "ImportContactsRequest",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_failure_text_shows_public_view_only(monkeypatch, actions):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+    stranger = types.User(
+        id=909,
+        first_name="Zed",
+        username="zed",
+        phone="79991112233",
+        verified=True,
+        access_hash=3,
+        status=types.UserStatusOnline(expires=None),
+    )
+
+    async def call(request, *args, **kwargs):
+        return types.contacts.ImportedContacts(
+            imported=[], popular_invites=[], retry_contacts=[], users=[stranger]
+        )
+
+    actions.__class__ = type("Failing", (ActionClient,), {"__call__": call})
+
+    result = await contacts.add_contact(phone="+79991112233", first_name="Zed")
+
+    assert result.startswith("Contact not added. Response:")
+    assert "79991112233" not in result and "UserStatus" not in result
+    assert '"username": "zed"' in result and "verified" in result

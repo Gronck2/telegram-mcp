@@ -1840,7 +1840,8 @@ async def get_send_as(chat_id: Union[int, str], account: Optional[str] = None) -
     )
 )
 @with_account(readonly=False)
-@validate_id("chat_id", "send_as")
+@validate_id("chat_id")
+@validate_id("send_as", peer_subject=True)
 async def set_default_send_as(
     chat_id: Union[int, str], send_as: Union[int, str], account: Optional[str] = None
 ) -> str:
@@ -1878,6 +1879,8 @@ async def set_default_send_as(
 )
 @with_account(readonly=False)
 @validate_id("from_chat_id", "to_chat_id")
+# The sender identity is a peer too: write access like any acted-on peer.
+@require_peer_access("send_as")
 async def forward_message(
     from_chat_id: Union[int, str],
     message_id: Union[int, List[int]],

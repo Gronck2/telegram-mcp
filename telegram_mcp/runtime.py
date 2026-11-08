@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import os
 import re
 import sys
@@ -1539,6 +1540,37 @@ async def deny_peer_param(
             **{param_name: value},
         )
     return None
+
+
+def require_peer_access(*param_names, subject=True):
+    """Decorator: the peer named by each given parameter must be allowed for the tool.
+
+    For tools whose parameters name a peer but are not run through ``validate_id``
+    (so their input handling stays as it is). The mode (read or write) follows the
+    tool's annotations, see ``deny_peer_param``. A no-op without a chat allowlist.
+    """
+
+    def decorator(func):
+        signature = inspect.signature(func)
+
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            if is_chat_allowlist_enabled():
+                # Bind by name so a positional call cannot slip past the check.
+                bound = signature.bind_partial(*args, **kwargs).arguments
+                for name in param_names:
+                    if bound.get(name) is None:
+                        continue
+                    denied = await deny_peer_param(
+                        func.__name__, name, bound[name], bound.get("account"), subject=subject
+                    )
+                    if denied is not None:
+                        return denied
+            return await func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 # Error code prefix mapping for better error tracing
