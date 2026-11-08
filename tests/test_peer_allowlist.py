@@ -2385,3 +2385,85 @@ def test_peer_allowed_held_check_runs_before_allowlist_match(monkeypatch):
 
     assert runtime.peer_allowed(STRANGER, runtime.CHAT_ACCESS_READ, "foo_user") is False
     assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "foo_user") is True
+
+
+# ---------------------------------------------------------------------------
+# Task 0003 review 3 (tester): active-only secondary usernames, identifier path isolated
+# ---------------------------------------------------------------------------
+
+
+def _identifier_only_grant(monkeypatch):
+    """Make the allowlist match by the caller's string alone (entity and id never match)."""
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    seen = []
+
+    def fake(chat_identifier, entity=None, access=runtime.CHAT_ACCESS_READ):
+        seen.append(chat_identifier)
+        return isinstance(chat_identifier, str) and chat_identifier.lstrip("@") == "foo_user"
+
+    monkeypatch.setattr(runtime, "is_chat_allowed", fake)
+    return seen
+
+
+def test_identifier_grant_needs_the_entity_to_hold_an_active_name(monkeypatch):
+    seen = _identifier_only_grant(monkeypatch)
+
+    # active secondary held by the entity: the identifier path alone grants
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "@foo_user") is True
+    assert "@foo_user" in seen
+    # deactivated name, or an entity that does not hold the string: the guard refuses
+    assert runtime.peer_allowed(INACTIVE_SECONDARY, runtime.CHAT_ACCESS_READ, "@foo_user") is False
+    assert runtime.peer_allowed(IVAN, runtime.CHAT_ACCESS_READ, "@foo_user") is False
+    # without an identifier the string-only fake never grants
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ) is False
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_inactive_secondary_given_stays_public(monkeypatch, profile_client):
+    async def resolve(identifier, c=None):
+        return INACTIVE_SECONDARY
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+
+    text = await profile.get_full_user("foo_user")
+
+    assert "SECRET-BIO" not in text
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_inactive_secondary_given_stays_public(
+    monkeypatch, username_client
+):
+    username_client.return_value = resolved_username_response(INACTIVE_SECONDARY)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    text = await chats.resolve_username("t.me/foo_user")
+
+    assert "79995554433" not in text
+    assert "phone" not in json.loads(text)
+
+
+@pytest.mark.asyncio
+async def test_add_contact_inactive_secondary_is_refused(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(
+                peer=types.PeerUser(user_id=INACTIVE_SECONDARY.id), users=[INACTIVE_SECONDARY]
+            )
+        return SimpleNamespace(updates=[1])
+
+    async def resolve(identifier, c=None):
+        return INACTIVE_SECONDARY
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    for module in (contacts, runtime):
+        monkeypatch.setattr(module, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="@foo_user")
+
+    result = await contacts.add_contact(username="@foo_user", first_name="Sec")
+
+    assert "added successfully" not in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
