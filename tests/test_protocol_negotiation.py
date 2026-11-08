@@ -368,3 +368,54 @@ async def test_session_handshake_protocol_negotiation():
         sent_session_msg = mock_write.send.call_args[0][0]
         result_dict = sent_session_msg.message.root.result
         assert result_dict["protocolVersion"] == version
+
+
+# ---------------------------------------------------------------------------
+# SSE transport: the same Origin check covers the custom routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/media/x?exp=1&sig=x"), ("PUT", "/upload/x?exp=1&sig=x"), ("POST", "/messages/")],
+)
+def test_sse_app_rejects_cross_origin_requests(method, path):
+    from telegram_mcp.transport.http import create_sse_app
+
+    with TestClient(create_sse_app(mcp), base_url="http://localhost:8765") as client:
+        response = client.request(method, path, headers={"Origin": "https://evil.example"})
+        assert response.status_code == 403
+
+
+@pytest.mark.parametrize("origin", [None, "http://localhost:6274"])
+def test_sse_app_lets_messages_through_without_or_with_good_origin(origin):
+    from telegram_mcp.transport.http import create_sse_app
+
+    headers = {"Origin": origin} if origin else {}
+    with TestClient(create_sse_app(mcp), base_url="http://localhost:8765") as client:
+        response = client.post("/messages/", headers=headers)
+        assert response.status_code == 400  # reached FastMCP: no session_id
+
+
+def test_origin_middleware_passes_through_without_buffering():
+    import asyncio
+
+    from telegram_mcp.transport.http import OriginCheckMiddleware
+
+    sent = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"a", "more_body": True})
+        await send({"type": "http.response.body", "body": b"b"})
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "path": "/sse", "headers": []}
+    asyncio.run(OriginCheckMiddleware(app, mcp)(scope, None, send))
+    assert [m["type"] for m in sent] == [
+        "http.response.start",
+        "http.response.body",
+        "http.response.body",
+    ]

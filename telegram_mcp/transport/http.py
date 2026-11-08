@@ -1,4 +1,4 @@
-"""Streamable HTTP transport with MCP 2026-07-28 protocol negotiation support."""
+"""Streamable HTTP (and Origin-checked SSE) transport with MCP 2026-07-28 protocol negotiation support."""
 
 from __future__ import annotations
 
@@ -52,6 +52,30 @@ def is_origin_allowed(origin: Optional[str], mcp_instance: Any = None) -> bool:
     if not getattr(settings, "enable_dns_rebinding_protection", True):
         return True
     return _origin_matches(origin, getattr(settings, "allowed_origins", ()))
+
+
+class OriginCheckMiddleware:
+    """Pure ASGI middleware that refuses requests from a disallowed Origin (403).
+
+    Requests without an Origin header pass. Nothing is buffered or rewritten, so
+    it is safe in front of the long-lived SSE stream. Used for the legacy SSE
+    transport, where it covers the custom /media/ and /upload/ routes that
+    FastMCP's own Host/Origin validation (only /sse and /messages/) misses.
+    """
+
+    def __init__(self, app: ASGIApp, mcp_instance: Any = None):
+        self.app = app
+        self.mcp_instance = mcp_instance
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            raw_origin = dict(scope.get("headers", [])).get(b"origin")
+            origin = raw_origin.decode("latin-1").strip() if raw_origin else None
+            if not is_origin_allowed(origin, self.mcp_instance):
+                logger.warning("Rejected request from disallowed Origin: %s", origin)
+                await Response("Invalid Origin header", status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class ProtocolNegotiationMiddleware:
@@ -261,3 +285,25 @@ async def run_streamable_http_async(mcp_instance: Any) -> None:
     )
     server = uvicorn.Server(config)
     await server.serve()
+
+
+def create_sse_app(mcp_instance: Any) -> Any:
+    """Build FastMCP's legacy SSE app wrapped in the Origin check."""
+    return OriginCheckMiddleware(mcp_instance.sse_app(), mcp_instance)
+
+
+async def run_sse_async(mcp_instance: Any) -> None:
+    """Run the legacy SSE transport with the Origin check in front of every route."""
+    if not hasattr(mcp_instance, "sse_app"):
+        await mcp_instance.run_sse_async()
+        return
+
+    import uvicorn
+
+    config = uvicorn.Config(
+        create_sse_app(mcp_instance),
+        host=mcp_instance.settings.host,
+        port=mcp_instance.settings.port,
+        log_level=mcp_instance.settings.log_level.lower(),
+    )
+    await uvicorn.Server(config).serve()

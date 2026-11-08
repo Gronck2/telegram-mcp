@@ -543,7 +543,7 @@ open in your browser cannot send tool calls to the local server (cross-origin
 request forgery / DNS rebinding). By default only `127.0.0.1`, `localhost` and
 `[::1]` Host headers are accepted, and only browser pages served from those
 hosts; requests without an `Origin` header (regular MCP clients) are not
-affected. CORS preflights echo only an allowed origin, never `*`.
+affected. The Origin check also covers the `/media/` and `/upload/` routes under `sse`. CORS preflights echo only an allowed origin, never `*`.
 
 If the server is reachable via a domain (e.g. behind a reverse proxy) rather
 than only `127.0.0.1`/`localhost`, set `MCP_ALLOWED_HOSTS` to the Host headers
@@ -848,7 +848,9 @@ TELEGRAM_ALLOWED_WRITE_CHATS=-100999999999
 
 - A chat's read access is `TELEGRAM_ALLOWED_CHAT_IDS` plus `TELEGRAM_ALLOWED_READ_CHATS`; its write access is `TELEGRAM_ALLOWED_CHAT_IDS` plus `TELEGRAM_ALLOWED_WRITE_CHATS`. Write access does not imply read access, so a write-only chat can receive reports the agent cannot read back.
 - **Fail closed:** once any of the three variables is set, both modes are restricted. Setting only `TELEGRAM_ALLOWED_READ_CHATS` makes the agent read-only on those chats and unable to write anywhere.
-- `*` allows every chat for that list, e.g. `TELEGRAM_ALLOWED_READ_CHATS=*` with a narrow `TELEGRAM_ALLOWED_WRITE_CHATS` lets the agent read everything but post only to the listed chats.
+- A variable set to a non-blank value with no usable entry (`@`, `,`, `@,@`) denies every chat instead of counting as unset; empty or whitespace-only still means unset.
+- `press_inline_button` and `vote_poll` need both read and write access to the chat. `join_chat_by_link` and `import_chat_invite` need write access to the invite's chat while any allowlist is set; an invite that does not reveal its chat before joining is refused.
+- `*` (a bare token only; `@*` is not a wildcard) allows every chat for that list, in all three variables including `TELEGRAM_ALLOWED_CHAT_IDS`, e.g. `TELEGRAM_ALLOWED_READ_CHATS=*` with a narrow `TELEGRAM_ALLOWED_WRITE_CHATS` lets the agent read everything but post only to the listed chats.
 - Each tool's mode follows its MCP annotations: read-only tools (the ones `TELEGRAM_EXPOSED_TOOLS=read-only` keeps) need read access, every other tool needs write access. `download_media`, `export_chat_history` and `export_unread_messages` only read the chat (they write local files) and need read access. `forward_message` / `forward_messages` need read access to `from_chat_id` and write access to `to_chat_id`; `vote_poll` needs both.
 - Listings and incoming events (`list_chats`, `get_chats`, `search_global`, `get_drafts`, `wait_for_events`, the incoming feed) show readable chats only; a write-only chat is used by its ID.
 - Prefer numeric IDs over usernames: a username can be changed and later claimed by a different chat, an ID cannot.

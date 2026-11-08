@@ -235,7 +235,9 @@ async def _serve(transport: str) -> None:
         if transport == "http":
             await mcp.run_streamable_http_async()
         else:
-            await mcp.run_sse_async()
+            from telegram_mcp.transport.http import run_sse_async
+
+            await run_sse_async(mcp)
     else:
         # Use the asynchronous entrypoint instead of mcp.run()
         await mcp.run_stdio_async()

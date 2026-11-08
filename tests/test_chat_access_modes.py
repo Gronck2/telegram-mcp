@@ -147,6 +147,9 @@ def test_denial_message_names_the_mode_and_variable(monkeypatch):
         ("forward_message", "to_chat_id", CHAT_ACCESS_WRITE),
         ("forward_messages", "from_chat_id", CHAT_ACCESS_READ),
         ("forward_messages", "to_chat_id", CHAT_ACCESS_WRITE),
+        # Reads the chat (keyboard, button list, callback answer) and presses a button.
+        ("press_inline_button", "chat_id", CHAT_ACCESS_BOTH),
+        ("vote_poll", "chat_id", CHAT_ACCESS_BOTH),
         # Not a registered tool: must pass both lists.
         ("not_a_registered_tool", "chat_id", CHAT_ACCESS_BOTH),
     ],
@@ -162,6 +165,7 @@ def test_every_registered_chat_tool_has_a_definite_mode():
         tool.name
         for tool in tools
         if set(tool.parameters.get("properties", {})) & runtime.CHAT_PARAM_NAMES
+        and tool.name not in runtime.BOTH_ACCESS_TOOLS
         and chat_access_for_tool(tool.name, "chat_id") == CHAT_ACCESS_BOTH
     ]
     assert undetermined == []
@@ -183,6 +187,33 @@ async def test_send_message_needs_write_access(monkeypatch):
 
     result = await messages.send_message(chat_id=-100111, message="hi")
     assert "Write access to chat '-100111' is restricted" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_press_inline_button_needs_read_access_too(monkeypatch):
+    """A write-only entry must not let press_inline_button read the chat's keyboard."""
+    monkeypatch.setattr(runtime, "get_client", _unreachable_client)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "-100111")
+
+    result = await messages.press_inline_button(chat_id=-100111, button_text="x")
+    assert "Read access to chat '-100111' is restricted" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_press_inline_button_with_read_and_write_reaches_telegram(monkeypatch):
+    reached = []
+
+    def client(account=None):
+        reached.append(account)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(runtime, "get_client", client)
+    monkeypatch.setattr(messages, "get_client", client)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-100111")
+
+    result = await messages.press_inline_button(chat_id=-100111, button_text="x")
+    assert "restricted" not in str(result)
+    assert reached
 
 
 @pytest.mark.asyncio

@@ -1634,6 +1634,27 @@ async def get_invite_link(chat_id: Union[int, str], account: Optional[str] = Non
         return log_and_format_error("get_invite_link", e, chat_id=chat_id)
 
 
+async def _check_invite_allowed(cl, invite_hash: str) -> Optional[str]:
+    """Return an error message if joining via this invite is blocked by the chat allowlist.
+
+    With no chat allowlist configured this does nothing. Otherwise the invite is
+    resolved first: ChatInviteAlready / ChatInvitePeek carry the chat, which
+    needs write access. A plain ChatInvite has no chat id before joining, so it
+    is refused. Lookup errors propagate (fail closed: the caller must not join).
+    """
+    if not is_chat_allowlist_enabled():
+        return None
+    info = await cl(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+    chat = getattr(info, "chat", None)
+    if isinstance(info, (types.ChatInviteAlready, types.ChatInvitePeek)) and chat is not None:
+        return check_chat_access(get_marked_id(chat), chat, CHAT_ACCESS_WRITE)
+    return (
+        "Write access to this invite's chat is restricted by privacy policy "
+        "(TELEGRAM_ALLOWED_CHAT_IDS / TELEGRAM_ALLOWED_WRITE_CHATS): the target chat "
+        "cannot be identified before joining."
+    )
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Join Chat By Link", openWorldHint=True, destructiveHint=True, idempotentHint=True
@@ -1654,6 +1675,10 @@ async def join_chat_by_link(link: str, account: Optional[str] = None) -> str:
                 hash_part = hash_part[1:]  # Remove the '+' if present
         else:
             hash_part = link
+
+        blocked = await _check_invite_allowed(cl, hash_part)
+        if blocked:
+            return blocked
 
         # Try checking the invite before joining
         try:
@@ -1738,6 +1763,10 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
         # Remove any prefixes like '+' if present
         if hash.startswith("+"):
             hash = hash[1:]
+
+        blocked = await _check_invite_allowed(cl, hash)
+        if blocked:
+            return blocked
 
         # Try checking the invite before joining
         try:
