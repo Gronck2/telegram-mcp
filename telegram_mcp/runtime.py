@@ -1184,6 +1184,38 @@ CHAT_PARAM_NAMES: frozenset[str] = frozenset(
 )
 
 
+def _chat_id_tokens(
+    raw: Optional[Union[str, Iterable[Union[int, str]]]],
+) -> Optional[list[str]]:
+    """Split a raw allowlist value into tokens; None means unset, [] means deny all."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+        # Only separators (","): non-blank, so an empty list (deny all).
+        return [t.strip() for t in raw.split(",") if t.strip()]
+    if isinstance(raw, (list, tuple, set)):
+        return [str(t).strip() for t in raw if str(t).strip()] or None
+    return None
+
+
+def _parse_chat_id_token(token: str) -> Optional[Union[int, str]]:
+    """Parse one allowlist token into an ID, handle, wildcard or inert sentinel."""
+    if token == CHAT_ALLOWLIST_WILDCARD:
+        return CHAT_ALLOWLIST_WILDCARD
+    if _NUMERIC_CHAT_ID_RE.fullmatch(token):
+        return int(token)
+    clean_handle = token.lstrip("@").strip().lower()
+    if clean_handle == CHAT_ALLOWLIST_WILDCARD:
+        # "@*" is not the wildcard: keep a sentinel no identifier can match
+        # (identifiers are stripped of "@" before comparing) so it still
+        # counts as an entry and never widens access.
+        return "@" + CHAT_ALLOWLIST_WILDCARD
+    return clean_handle or None
+
+
 def _parse_allowed_chat_ids(
     raw: Optional[Union[str, Iterable[Union[int, str]]]],
 ) -> Optional[set[Union[int, str]]]:
@@ -1205,39 +1237,14 @@ def _parse_allowed_chat_ids(
     the wildcard. A non-blank value with no valid entry yields an empty set
     (allowlist enabled, deny all); blank or empty input yields None (unset).
     """
-    if raw is None:
+    tokens = _chat_id_tokens(raw)
+    if tokens is None:
         return None
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return None
-        tokens = [t.strip() for t in raw.split(",") if t.strip()]
-        if not tokens:
-            return set()  # only separators (","): non-blank, so deny all
-    elif isinstance(raw, (list, tuple, set)):
-        tokens = [str(t).strip() for t in raw if str(t).strip()]
-    else:
-        return None
-
-    if not tokens:
-        return None
-
     allowed: set[Union[int, str]] = set()
     for token in tokens:
-        if token == CHAT_ALLOWLIST_WILDCARD:
-            allowed.add(CHAT_ALLOWLIST_WILDCARD)
-            continue
-        if _NUMERIC_CHAT_ID_RE.fullmatch(token):
-            allowed.add(int(token))
-            continue
-        clean_handle = token.lstrip("@").strip().lower()
-        if clean_handle == CHAT_ALLOWLIST_WILDCARD:
-            # "@*" is not the wildcard: keep a sentinel no identifier can match
-            # (identifiers are stripped of "@" before comparing) so it still
-            # counts as an entry and never widens access.
-            allowed.add("@" + CHAT_ALLOWLIST_WILDCARD)
-        elif clean_handle:
-            allowed.add(clean_handle)
+        entry = _parse_chat_id_token(token)
+        if entry is not None:
+            allowed.add(entry)
 
     # Fail closed: a non-empty value with no usable entry ("@", ",") is an
     # enabled allowlist that matches nothing, not an unset one.

@@ -1,4 +1,4 @@
-"""Streamable HTTP (and Origin-checked SSE) transport with MCP 2026-07-28 protocol negotiation support."""
+"""Streamable HTTP (and Origin-checked SSE) transport with MCP 2026-07-28 negotiation."""
 
 from __future__ import annotations
 

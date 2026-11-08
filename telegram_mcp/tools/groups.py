@@ -1658,6 +1658,24 @@ async def _check_invite_allowed(cl, invite_hash: str) -> tuple[Optional[str], An
     ), info
 
 
+async def _already_member_message(cl, invite_hash: str, invite_info: Any) -> Optional[str]:
+    """Return an "already a member" message if the invite resolves to a joined chat.
+
+    Reuses invite_info from _check_invite_allowed, else probes with
+    CheckChatInviteRequest. Probe errors are swallowed (they usually mean the
+    caller is not a member yet), so the caller goes on to import.
+    """
+    try:
+        if invite_info is None:
+            invite_info = await cl(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+        if isinstance(invite_info, types.ChatInviteAlready) and invite_info.chat:
+            chat_title = sanitize_name(getattr(invite_info.chat, "title", "Unknown Chat"))
+            return f"You are already a member of this chat: {chat_title}"
+    except Exception:
+        pass
+    return None
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Join Chat By Link", openWorldHint=True, destructiveHint=True, idempotentHint=True
@@ -1683,18 +1701,9 @@ async def join_chat_by_link(link: str, account: Optional[str] = None) -> str:
         if blocked:
             return blocked
 
-        # Try checking the invite before joining
-        try:
-            # Try to check invite info first (will often fail if not a member)
-            if invite_info is None:
-                invite_info = await cl(functions.messages.CheckChatInviteRequest(hash=hash_part))
-            if isinstance(invite_info, types.ChatInviteAlready) and invite_info.chat:
-                # If we got chat info, we're already a member
-                chat_title = sanitize_name(getattr(invite_info.chat, "title", "Unknown Chat"))
-                return f"You are already a member of this chat: {chat_title}"
-        except Exception:
-            # This often fails if not a member - just continue
-            pass
+        member_msg = await _already_member_message(cl, hash_part, invite_info)
+        if member_msg:
+            return member_msg
 
         # Join the chat using the hash
         result = await cl(functions.messages.ImportChatInviteRequest(hash=hash_part))
@@ -1772,26 +1781,9 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
         if blocked:
             return blocked
 
-        # Try checking the invite before joining
-        try:
-            from telethon.errors import (
-                InviteHashExpiredError,
-                InviteHashInvalidError,
-                UserAlreadyParticipantError,
-                ChatAdminRequiredError,
-                UsersTooMuchError,
-            )
-
-            # Try to check invite info first (will often fail if not a member)
-            if invite_info is None:
-                invite_info = await cl(functions.messages.CheckChatInviteRequest(hash=hash))
-            if isinstance(invite_info, types.ChatInviteAlready) and invite_info.chat:
-                # If we got chat info, we're already a member
-                chat_title = sanitize_name(getattr(invite_info.chat, "title", "Unknown Chat"))
-                return f"You are already a member of this chat: {chat_title}"
-        except Exception:
-            # This often fails if not a member - just continue
-            pass
+        member_msg = await _already_member_message(cl, hash, invite_info)
+        if member_msg:
+            return member_msg
 
         # Join the chat using the hash
         try:
