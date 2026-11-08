@@ -1466,3 +1466,119 @@ async def test_set_contact_alias_ambiguous_candidates_filtered_with_write_star(
 
     assert "Hidden Vanya" not in result and "303" not in result and "the hidden" not in result
     assert "Open Vanya" in result
+
+
+# ---------------------------------------------------------------------------
+# Round 2 follow-up: validate_id path, visible_alias_records, read-only aliases
+# ---------------------------------------------------------------------------
+
+
+def _validated(access_name):
+    """A tool body behind validate_id, named so its read/write mode is known."""
+    calls = []
+
+    async def body(chat_id, account=None):
+        calls.append(chat_id)
+        return "ran"
+
+    body.__name__ = access_name
+    body = runtime.validate_id("chat_id")(body)
+
+    return body, calls
+
+
+@pytest.mark.asyncio
+async def test_validate_id_hidden_alias_neither_resolves_nor_leaks(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Hidden Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101", TELEGRAM_ALLOWED_WRITE_CHATS="101")
+    body, calls = _validated("send_message")
+
+    result = await body(chat_id="лена")
+
+    assert calls == []
+    assert "303" not in result and "Hidden Lena" not in result
+
+
+@pytest.mark.asyncio
+async def test_validate_id_read_only_alias_denied_for_write_without_stored_id(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="303", TELEGRAM_ALLOWED_WRITE_CHATS="101")
+    body, calls = _validated("send_message")
+
+    result = await body(chat_id="лена")
+
+    assert calls == []
+    assert "лена" in result and "303" not in result
+
+
+@pytest.mark.asyncio
+async def test_validate_id_read_only_alias_passes_for_read_tool(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="303", TELEGRAM_ALLOWED_WRITE_CHATS="101")
+    body, calls = _validated("get_messages")
+
+    assert await body(chat_id="лена") == "ran"
+    assert calls == [303]
+
+
+@pytest.mark.asyncio
+async def test_validate_id_write_only_alias_resolves_for_write_tool(monkeypatch):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="303", TELEGRAM_ALLOWED_READ_CHATS="101")
+    body, calls = _validated("send_message")
+
+    assert await body(chat_id="лена") == "ran"
+    assert calls == [303]
+
+
+@pytest.mark.asyncio
+async def test_validate_id_at_self_is_not_a_self_reference(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+    seen = []
+
+    async def resolve(identifier, c=None):
+        seen.append(identifier)
+        return SimpleNamespace(id=999, is_self=False, username="self")
+
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: object())
+    body, calls = _validated("get_messages")
+
+    result = await body(chat_id="@self")
+
+    assert seen == ["@self"]
+    assert calls == [] and "restricted" in result
+
+
+RECORDS = {
+    "open": {"id": 101, "name": "Open"},
+    "hidden": {"id": 303, "name": "Hidden"},
+}
+
+
+def test_visible_alias_records_passthrough_without_allowlist():
+    pairs = list(RECORDS.items())
+
+    assert runtime.visible_alias_records(pairs) is pairs
+    assert runtime.visible_alias_records(RECORDS) is RECORDS
+
+
+def test_visible_alias_records_filters_list_and_dict_by_read(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101", TELEGRAM_ALLOWED_WRITE_CHATS="303")
+
+    assert runtime.visible_alias_records(list(RECORDS.items())) == [("open", RECORDS["open"])]
+    assert runtime.visible_alias_records(RECORDS) == {"open": RECORDS["open"]}
+    assert runtime.visible_alias_records([]) == []
+    assert runtime.visible_alias_records({}) == {}
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_alias_flow_makes_no_extra_telegram_calls(actions):
+    runtime.save_aliases({"лена": {"id": 303, "name": "Lena"}})
+
+    assert runtime.apply_alias("лена") == 303
+    assert (
+        await runtime.deny_peer_param("get_full_user", "user_id", "@whoever", subject=True) is None
+    )
+    assert await runtime.deny_peer_param("block_user", "user_id", ["me", "лена"]) is None
+    assert actions.requests == []
