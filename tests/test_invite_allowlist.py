@@ -291,3 +291,56 @@ async def test_allowed_peek_import_error_is_reported(monkeypatch, tool):
     assert "expired" in result
     assert client.imports == 1
     assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowlist", [None, "-1000000000222"])
+@pytest.mark.parametrize(
+    "err,expected",
+    [
+        ("INVITE_HASH_INVALID", "invalid or malformed"),
+        ("USER_ALREADY_PARTICIPANT", "already a member"),
+        ("CHAT_ADMIN_REQUIRED", "requires admin approval"),
+        ("USERS_TOO_MUCH", "maximum number of participants"),
+    ],
+)
+async def test_import_chat_invite_error_messages_with_and_without_allowlist(
+    monkeypatch, allowlist, err, expected
+):
+    if allowlist:
+        monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", allowlist)
+        check = types.ChatInvitePeek(chat=_channel(222), expires=0)
+    else:
+        check = RuntimeError(err)
+    client = _FakeClient(check, import_error=RuntimeError(err.replace("_", " ")))
+    result = await _call("hash", client, monkeypatch)
+    assert expected in result
+    assert client.imports == 1
+
+
+@pytest.mark.asyncio
+async def test_import_chat_invite_unknown_error_is_formatted(monkeypatch):
+    client = _FakeClient(RuntimeError("boom"), import_error=RuntimeError("weird failure"))
+    result = await _call("hash", client, monkeypatch)
+    assert "An error occurred" in result
+    assert client.imports == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_already_member_message_names_chat_without_probe_when_info_known(monkeypatch, tool):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1000000000222")
+    client = _FakeClient(_already(_channel(222)))
+    result = await _call(tool, client, monkeypatch)
+    assert "already a member of this chat: Chan" in result
+    assert client.checks == 1
+    assert client.imports == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_already_member_message_without_allowlist(monkeypatch, tool):
+    client = _FakeClient(_already(_channel(222)))
+    result = await _call(tool, client, monkeypatch)
+    assert "already a member of this chat: Chan" in result
+    assert client.imports == 0

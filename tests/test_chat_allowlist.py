@@ -907,3 +907,53 @@ def test_module_attribute_loaded_from_typo_env_is_deny_all(monkeypatch, raw):
 def test_module_attribute_loaded_from_blank_env_is_unset(monkeypatch, raw):
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
     assert runtime._load_allowed_chat_ids() is None
+
+
+# ---------------------------------------------------------------------------
+# Parser refactor (_chat_id_tokens / _parse_chat_id_token): behaviour unchanged
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("container", [list, tuple, set])
+def test_iterable_mixed_ints_and_strings(container):
+    parsed = _parse_allowed_chat_ids(container([123, "@Team", " ", "-100456"]))
+    assert parsed == {123, "team", -100456}
+
+
+@pytest.mark.parametrize("container", [list, tuple, set])
+def test_iterable_of_blanks_is_unset(container):
+    assert _parse_allowed_chat_ids(container(["", "  "])) is None
+
+
+def test_iterable_star_and_at_star():
+    assert _parse_allowed_chat_ids(["*"]) == {"*"}
+    parsed = _parse_allowed_chat_ids(["@*"])
+    assert parsed == {"@*"}
+    assert "*" not in parsed
+
+
+def test_mixed_valid_and_invalid_keeps_only_valid():
+    assert _parse_allowed_chat_ids("@, @Alice, ,-100123, 77") == {"alice", -100123, 77}
+
+
+def test_at_star_alongside_valid_entry_does_not_widen():
+    parsed = _parse_allowed_chat_ids("@*, bob")
+    assert parsed == {"@*", "bob"}
+    assert not runtime._matches_chat_allowlist(parsed, "other", None)
+
+
+def test_uppercase_handles_lowercased_and_at_stripped():
+    assert _parse_allowed_chat_ids("@MyChan, PUBLIC") == {"mychan", "public"}
+
+
+def test_multiple_leading_ats_stripped():
+    assert _parse_allowed_chat_ids("@@Foo") == {"foo"}
+
+
+def test_unsupported_type_is_unset():
+    assert _parse_allowed_chat_ids(12345) is None  # type: ignore[arg-type]
+    assert _parse_allowed_chat_ids({"a": 1}) is None  # type: ignore[arg-type]
+
+
+def test_phone_with_valid_entry():
+    assert _parse_allowed_chat_ids("+7999123, 5") == {"+7999123", 5}
