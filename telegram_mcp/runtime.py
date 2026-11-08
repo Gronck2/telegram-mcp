@@ -1432,14 +1432,18 @@ def _entity_holds_username(entity: Any, identifier: str) -> bool:
 
     Defence in depth for the identifier grant: the resolved peer must itself carry the
     string (guards against a display-name or stale-cache hit). Fails closed when a min
-    entity lacks the lists. ``active`` is not required here: Telegram resolves only
-    active names, so the allowlist match itself still decides.
+    entity lacks the lists. Only active secondary usernames count (same rule as
+    ``_matches_chat_allowlist``); deactivated names never match.
     """
     wanted = identifier.strip().lstrip("@").lower()
     names = [getattr(entity, "username", None)]
     usernames = getattr(entity, "usernames", None)
     if isinstance(usernames, (list, tuple)):
-        names += [getattr(item, "username", None) for item in usernames]
+        names += [
+            getattr(item, "username", None)
+            for item in usernames
+            if getattr(item, "active", None) is True
+        ]
     return any(isinstance(name, str) and name.lower() == wanted for name in names)
 
 

@@ -1756,20 +1756,37 @@ SECONDARY = types.User(
     id=303,
     first_name="Sec",
     username=None,
-    # inactive here: only the identifier the caller gave may match (see test_chat_allowlist
-    # for the active case, which the allowlist matches by itself)
+    usernames=[types.Username(username="foo_user", editable=False, active=True)],
+    access_hash=3,
+    phone="79995554433",
+)
+
+# same peer, but the secondary username is deactivated: it never matches
+INACTIVE_SECONDARY = types.User(
+    id=303,
+    first_name="Sec",
+    username=None,
     usernames=[types.Username(username="foo_user", editable=False, active=False)],
     access_hash=3,
     phone="79995554433",
 )
 
 
-def test_peer_allowed_identifier_matches_a_secondary_username(monkeypatch):
+def test_peer_allowed_active_secondary_username_grants_by_entity_and_identifier(monkeypatch):
     allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
 
-    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ) is False
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ) is True
     assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "@foo_user") is True
     assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_WRITE, "foo_user") is True
+
+
+@pytest.mark.parametrize("identifier", [None, "@foo_user", "foo_user", "FOO_USER"])
+def test_peer_allowed_inactive_secondary_username_never_grants(monkeypatch, identifier):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+
+    assert runtime.peer_allowed(INACTIVE_SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is False
+    assert runtime.peer_allowed(INACTIVE_SECONDARY, runtime.CHAT_ACCESS_WRITE, identifier) is False
+    assert runtime._entity_holds_username(INACTIVE_SECONDARY, "foo_user") is False
 
 
 @pytest.mark.parametrize(
@@ -1778,7 +1795,7 @@ def test_peer_allowed_identifier_matches_a_secondary_username(monkeypatch):
 def test_peer_allowed_identifier_ignores_non_username_wording(monkeypatch, identifier):
     allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user,me,self,foo user,my friend,303x")
 
-    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is False
+    assert runtime.peer_allowed(INACTIVE_SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is False
 
 
 def test_peer_allowed_identifier_of_another_username_does_not_match(monkeypatch):
@@ -1923,10 +1940,10 @@ def test_peer_allowed_active_secondary_username_needs_no_identifier(monkeypatch)
 def test_peer_allowed_identifier_case_and_at_sign(monkeypatch, identifier):
     allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
 
-    result = runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, identifier)
-
-    # t.me links are cleaned by the tools before the call, not by peer_allowed
-    assert result is (identifier != "t.me/foo_user")
+    # the active secondary username matches by itself, whatever form the caller used
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is True
+    # a deactivated one never matches, in any form
+    assert runtime.peer_allowed(INACTIVE_SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is False
 
 
 # ---------------------------------------------------------------------------
@@ -2332,12 +2349,14 @@ def test_entity_holds_username_ignores_entries_without_a_name():
             SimpleNamespace(username=None, active=True),
             SimpleNamespace(active=True),
             SimpleNamespace(username=123, active=True),
-            SimpleNamespace(username="real_one", active=False),
+            SimpleNamespace(username="real_one", active=True),
+            SimpleNamespace(username="gone_one", active=False),
         ],
     )
 
     assert runtime._entity_holds_username(entity, "real_one") is True
     assert runtime._entity_holds_username(entity, "None") is False
+    assert runtime._entity_holds_username(entity, "gone_one") is False
 
 
 def test_peer_allowed_username_none_entries_do_not_grant(monkeypatch):
