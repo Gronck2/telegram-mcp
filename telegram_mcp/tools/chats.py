@@ -955,12 +955,12 @@ def normalize_username(username: str) -> str:
     return clean.strip()
 
 
-def _resolved_peer_details(users, chats, peer_id) -> Dict[str, Any]:
+def _resolved_peer_details(users, chats, peer_id, identifier=None) -> Dict[str, Any]:
     """Fields describing the first resolved user or chat; public fields only outside read."""
     target = (users or chats or [None])[0]
     if target is None:
         return {}
-    if not peer_allowed(target):
+    if not peer_allowed(target, identifier=identifier):
         # No phone, member counts or other detail for a peer outside read access.
         return public_view(target)
     if users:
@@ -1026,7 +1026,7 @@ async def resolve_username(username: str, account: Optional[str] = None) -> str:
 
         users = getattr(result, "users", [])
         chats = getattr(result, "chats", [])
-        entity_info.update(_resolved_peer_details(users, chats, peer_id))
+        entity_info.update(_resolved_peer_details(users, chats, peer_id, clean_user))
 
         return json.dumps(entity_info, indent=2, ensure_ascii=False)
     except Exception as e:

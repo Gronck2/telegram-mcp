@@ -380,7 +380,7 @@ async def get_full_user(username: Union[int, str], account: Optional[str] = None
         cl = get_client(account)
         await ensure_connected(cl)
         entity = await resolve_entity(username, cl)
-        if not peer_allowed(entity):
+        if not peer_allowed(entity, identifier=username):
             return json.dumps(public_view(entity), ensure_ascii=False)
         full = await cl(functions.users.GetFullUserRequest(id=entity))
 
@@ -461,7 +461,7 @@ async def get_bot_info(bot_username: str, account: Optional[str] = None) -> str:
         entity = await resolve_entity(bot_username, cl)
         if not entity:
             return f"Bot with username {bot_username} not found."
-        if not peer_allowed(entity):
+        if not peer_allowed(entity, identifier=bot_username):
             # Description and commands count as bio-like: public fields only.
             return json.dumps({"bot_info": public_view(entity)}, indent=2, ensure_ascii=False)
 

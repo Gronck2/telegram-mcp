@@ -1746,3 +1746,113 @@ async def test_add_contact_username_without_allowlist_makes_only_the_two_calls(
         "AddContactRequest",
     ]
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Task 0003: usernames the caller gave (secondary / collectible usernames)
+# ---------------------------------------------------------------------------
+
+SECONDARY = types.User(
+    id=303,
+    first_name="Sec",
+    username=None,
+    usernames=[types.Username(username="foo_user", editable=False, active=True)],
+    access_hash=3,
+    phone="79995554433",
+)
+
+
+def test_peer_allowed_identifier_matches_a_secondary_username(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ) is False
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "@foo_user") is True
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_WRITE, "foo_user") is True
+
+
+@pytest.mark.parametrize(
+    "identifier", ["foo user", "my friend", "me", "self", "303", "+79995554433", None, 303, ""]
+)
+def test_peer_allowed_identifier_ignores_non_username_wording(monkeypatch, identifier):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user,me,self,foo user,my friend,303x")
+
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, identifier) is False
+
+
+def test_peer_allowed_identifier_of_another_username_does_not_match(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+
+    assert runtime.peer_allowed(IVAN, runtime.CHAT_ACCESS_READ, "other_name") is False
+
+
+def test_peer_allowed_identifier_without_allowlist_is_true_without_work(monkeypatch):
+    monkeypatch.setattr(runtime, "is_chat_allowed", lambda *a, **k: pytest.fail("called"))
+
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "foo_user") is True
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_secondary_username_given_is_full(monkeypatch, profile_client):
+    async def resolve(identifier, c=None):
+        return SECONDARY
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    profile_client.return_value = SimpleNamespace(
+        users=[SECONDARY],
+        full_user=full_user_response().full_user,
+    )
+
+    data = json.loads(await profile.get_full_user("foo_user"))
+
+    assert data["bio"] == "SECRET-BIO"
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_alias_wording_stays_public(monkeypatch, profile_client):
+    async def resolve(identifier, c=None):
+        return SECONDARY
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="my friend")
+
+    text = await profile.get_full_user("my friend")
+
+    assert "SECRET-BIO" not in text
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_bot_info_secondary_username_given_is_full(monkeypatch, profile_client):
+    async def resolve(identifier, c=None):
+        return SECONDARY
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+    profile_client.return_value = SimpleNamespace(
+        users=[SECONDARY], full_user=full_user_response().full_user
+    )
+
+    data = json.loads(await profile.get_bot_info("@foo_user"))
+
+    assert data["bot_info"]["about"] == "SECRET-BIO"
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_secondary_username_given_is_full(monkeypatch, username_client):
+    username_client.return_value = resolved_username_response(SECONDARY)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    data = json.loads(await chats.resolve_username("t.me/foo_user"))
+
+    assert data["phone"] == "79995554433"
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_other_username_stays_public(monkeypatch, username_client):
+    username_client.return_value = resolved_username_response(SECONDARY)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@someone_else")
+
+    text = await chats.resolve_username("foo_user")
+
+    assert "79995554433" not in text

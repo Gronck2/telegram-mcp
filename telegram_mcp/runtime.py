@@ -1399,12 +1399,25 @@ def check_chat_access(
     )
 
 
-def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
+def _is_username_identifier(identifier: Any) -> bool:
+    """True for a string that is a real @username (not alias wording, id, phone or "me")."""
+    if not isinstance(identifier, str) or not is_handle_like(identifier):
+        return False
+    bare = identifier.strip().lstrip("@")
+    return not (bare.lstrip("-").isdigit() or bare.lower() in _SELF_REFS or "+" in identifier)
+
+
+def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ, identifier: Any = None) -> bool:
     """True if ``entity`` (user, group or channel) is allowed for ``access``.
 
     A user is judged as their private chat (marked id = user id). With no chat
     allowlist configured this is always True. An entity whose id cannot be
     read is treated as not allowed.
+
+    ``identifier`` is the @username the caller gave and that resolved to
+    ``entity`` (a collectible or secondary username is not in ``entity.username``).
+    It is only compared when it looks like a real username, so alias wording
+    never matches the allowlist by string.
     """
     if not is_chat_allowlist_enabled():
         return True
@@ -1415,7 +1428,9 @@ def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
         marked_id = get_marked_id(entity)
     except Exception:
         return False
-    return is_chat_allowed(marked_id, entity, access)
+    if is_chat_allowed(marked_id, entity, access):
+        return True
+    return _is_username_identifier(identifier) and is_chat_allowed(identifier, entity, access)
 
 
 def read_access_restricted() -> bool:
@@ -1487,9 +1502,11 @@ def public_view(entity: Any) -> Dict[str, Any]:
     return view
 
 
-def view_for(entity: Any, full_builder) -> Any:
+def view_for(entity: Any, full_builder, identifier: Any = None) -> Any:
     """``full_builder()`` for a peer inside read access, else its public view."""
-    return full_builder() if peer_allowed(entity, CHAT_ACCESS_READ) else public_view(entity)
+    if peer_allowed(entity, CHAT_ACCESS_READ, identifier):
+        return full_builder()
+    return public_view(entity)
 
 
 def _is_self_reference(item: Any) -> bool:
