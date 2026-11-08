@@ -1856,3 +1856,48 @@ async def test_resolve_username_other_username_stays_public(monkeypatch, usernam
     text = await chats.resolve_username("foo_user")
 
     assert "79995554433" not in text
+
+
+@pytest.mark.asyncio
+async def test_add_contact_by_secondary_username_succeeds(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(users=[SECONDARY])
+        return SimpleNamespace(updates=[1])
+
+    async def resolve(identifier, c=None):
+        return SECONDARY
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    for module in (contacts, runtime):
+        monkeypatch.setattr(module, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="@foo_user")
+
+    result = await contacts.add_contact(username="@foo_user", first_name="Sec")
+
+    assert "added successfully" in result
+    assert [type(r).__name__ for r in actions.requests] == [
+        "ResolveUsernameRequest",
+        "AddContactRequest",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_refusal_after_resolve_carries_the_privacy_text(monkeypatch, actions):
+    """Even if the string matches, a user the identifier does not cover gets the standard error."""
+
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        return SimpleNamespace(users=[SECONDARY])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    monkeypatch.setattr(contacts, "peer_allowed", lambda *a, **k: False)
+    monkeypatch.setattr(contacts, "deny_peer_param", AsyncMock(return_value=None))
+    monkeypatch.setattr(contacts, "check_chat_access", lambda *a, **k: None)
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="@foo_user")
+
+    result = await contacts.add_contact(username="foo_user", first_name="Sec")
+
+    assert "restricted by privacy policy" in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]

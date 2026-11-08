@@ -445,8 +445,13 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
 
         # The pre-check above resolved through local aliases; what is acted on is the
         # real @username, so the decisive check is on this user.
-        if is_chat_allowlist_enabled() and not peer_allowed(user, CHAT_ACCESS_WRITE):
-            err = check_chat_access(username_clean, access=CHAT_ACCESS_WRITE)
+        if is_chat_allowlist_enabled() and not peer_allowed(
+            user, CHAT_ACCESS_WRITE, identifier=username_clean
+        ):
+            err = check_chat_access(username_clean, user, CHAT_ACCESS_WRITE) or (
+                f"Write access to chat '{username_clean}' is restricted by privacy policy "
+                "(TELEGRAM_ALLOWED_CHAT_IDS / TELEGRAM_ALLOWED_WRITE_CHATS)."
+            )
             return log_and_format_error(
                 "add_contact",
                 ChatAccessDeniedError(err),
