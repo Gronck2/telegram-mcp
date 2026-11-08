@@ -1426,7 +1426,10 @@ def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ, identifier: Any = 
     read is treated as not allowed.
 
     ``identifier`` is the @username the caller gave and that resolved to
-    ``entity`` (a collectible or secondary username is not in ``entity.username``).
+    ``entity``; it must be the string ``entity`` was resolved from, and ``entity``
+    exactly the peer Telegram returned for it (never just the first raw element
+    of a result), since a matching string alone grants access. (A collectible or
+    secondary username is not in ``entity.username``.)
     It is only compared when it looks like a real username, so alias wording
     never matches the allowlist by string.
     """

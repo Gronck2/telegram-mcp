@@ -1028,7 +1028,7 @@ async def test_no_allowlist_group_c_tools_make_exactly_their_own_requests(monkey
     await contacts.block_user(user_id=101)
     await contacts.unblock_user(user_id=101)
     await contacts.delete_contact(user_id=101)
-    stranger = SimpleNamespace(users=[IVAN], updates=[1])
+    stranger = SimpleNamespace(peer=types.PeerUser(user_id=IVAN.id), users=[IVAN], updates=[1])
     original = actions.__class__.__call__
 
     async def call(self, request, *args, **kwargs):
@@ -1617,7 +1617,7 @@ async def test_add_contact_alias_does_not_launder_a_hidden_username(monkeypatch,
     async def call(self, request, *args, **kwargs):
         actions.requests.append(request)
         if type(request).__name__ == "ResolveUsernameRequest":
-            return SimpleNamespace(users=[boss])
+            return SimpleNamespace(peer=types.PeerUser(user_id=boss.id), users=[boss])
         return SimpleNamespace(updates=[1])
 
     async def resolve(identifier, c=None):
@@ -1708,7 +1708,7 @@ async def test_add_contact_username_of_an_allowed_user_still_works(monkeypatch, 
     async def call(self, request, *args, **kwargs):
         actions.requests.append(request)
         if type(request).__name__ == "ResolveUsernameRequest":
-            return SimpleNamespace(users=[IVAN])
+            return SimpleNamespace(peer=types.PeerUser(user_id=IVAN.id), users=[IVAN])
         return SimpleNamespace(updates=[1])
 
     monkeypatch.setattr(actions.__class__, "__call__", call)
@@ -1730,7 +1730,7 @@ async def test_add_contact_username_without_allowlist_makes_only_the_two_calls(
     async def call(self, request, *args, **kwargs):
         actions.requests.append(request)
         if type(request).__name__ == "ResolveUsernameRequest":
-            return SimpleNamespace(users=[IVAN])
+            return SimpleNamespace(peer=types.PeerUser(user_id=IVAN.id), users=[IVAN])
         return SimpleNamespace(updates=[1])
 
     monkeypatch.setattr(actions.__class__, "__call__", call)
@@ -1865,7 +1865,7 @@ async def test_add_contact_by_secondary_username_succeeds(monkeypatch, actions):
     async def call(self, request, *args, **kwargs):
         actions.requests.append(request)
         if type(request).__name__ == "ResolveUsernameRequest":
-            return SimpleNamespace(users=[SECONDARY])
+            return SimpleNamespace(peer=types.PeerUser(user_id=SECONDARY.id), users=[SECONDARY])
         return SimpleNamespace(updates=[1])
 
     async def resolve(identifier, c=None):
@@ -1891,7 +1891,7 @@ async def test_add_contact_refusal_after_resolve_carries_the_privacy_text(monkey
 
     async def call(self, request, *args, **kwargs):
         actions.requests.append(request)
-        return SimpleNamespace(users=[SECONDARY])
+        return SimpleNamespace(peer=types.PeerUser(user_id=SECONDARY.id), users=[SECONDARY])
 
     monkeypatch.setattr(actions.__class__, "__call__", call)
     monkeypatch.setattr(contacts, "peer_allowed", lambda *a, **k: False)
@@ -1927,3 +1927,85 @@ def test_peer_allowed_identifier_case_and_at_sign(monkeypatch, identifier):
 
     # t.me links are cleaned by the tools before the call, not by peer_allowed
     assert result is (identifier != "t.me/foo_user")
+
+
+# ---------------------------------------------------------------------------
+# Task 0003 review: act on the resolved peer, not on the first raw result element
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_picks_the_resolved_peer_not_the_first_user(
+    monkeypatch, username_client
+):
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerUser(user_id=RICH.id), users=[SECONDARY, RICH], chats=[]
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    text = await chats.resolve_username("foo_user")
+
+    assert "79995554433" not in text
+    assert json.loads(text).get("first_name") != "Sec"
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_wrong_first_user_never_gets_full_details(
+    monkeypatch, username_client
+):
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerUser(user_id=RICH.id), users=[SECONDARY], chats=[]
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    data = json.loads(await chats.resolve_username("foo_user"))
+
+    assert "phone" not in data and "first_name" not in data
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_wrong_chat_is_not_described(monkeypatch, username_client):
+    other = types.Channel(id=8, title="Other", photo=None, date=None, username="other")
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerChannel(channel_id=9), users=[], chats=[other]
+    )
+
+    data = json.loads(await chats.resolve_username("news"))
+
+    assert "title" not in data and data["peer_type"] == "channel"
+
+
+@pytest.mark.asyncio
+async def test_add_contact_does_not_act_on_a_user_other_than_the_resolved_peer(
+    monkeypatch, actions
+):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(peer=types.PeerUser(user_id=IVAN.id), users=[SECONDARY])
+        return SimpleNamespace(updates=[1])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="@foo_user")
+
+    result = await contacts.add_contact(username="@foo_user", first_name="Sec")
+
+    assert "added successfully" not in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_picks_the_resolved_peer_among_several_users(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(peer=types.PeerUser(user_id=IVAN.id), users=[SECONDARY, IVAN])
+        return SimpleNamespace(updates=[1])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+
+    result = await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert "added successfully" in result
+    add = [r for r in actions.requests if type(r).__name__ == "AddContactRequest"]
+    assert len(add) == 1 and add[0].id.user_id == IVAN.id

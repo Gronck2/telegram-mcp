@@ -439,9 +439,21 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
         if not resolve_result.users:
             return f"Error: User with username @{username_clean} not found."
 
-        user = resolve_result.users[0]
-        if not isinstance(user, User):
+        # Act only on the peer Telegram resolved the username to, never on whichever
+        # user happens to come first in the result.
+        peer = getattr(resolve_result, "peer", None)
+        if not isinstance(peer, types.PeerUser):
             return "Error: Resolved entity is not a user."
+        user = next(
+            (
+                u
+                for u in resolve_result.users
+                if isinstance(u, User) and getattr(u, "id", None) == peer.user_id
+            ),
+            None,
+        )
+        if user is None:
+            return f"Error: User with username @{username_clean} not found."
 
         # The pre-check above resolved through local aliases; what is acted on is the
         # real @username, so the decisive check is on this user.
