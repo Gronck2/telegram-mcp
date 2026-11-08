@@ -9,7 +9,7 @@ from telethon import functions, types
 
 import main
 from telegram_mcp import runtime
-from telegram_mcp.tools import chats, contacts, messages, profile
+from telegram_mcp.tools import chats, contacts, groups, messages, profile
 
 ENV_VARS = (
     "TELEGRAM_ALLOWED_CHAT_IDS",
@@ -786,3 +786,49 @@ async def test_add_contact_failure_text_shows_public_view_only(monkeypatch, acti
     assert result.startswith("Contact not added. Response:")
     assert "79991112233" not in result and "UserStatus" not in result
     assert '"username": "zed"' in result and "verified" in result
+
+
+# ---------------------------------------------------------------------------
+# Group D: user_id names a member inside a checked chat and must stay allowed
+# ---------------------------------------------------------------------------
+
+MEMBER_CALLS = [
+    ("ban_user", {"chat_id": -1001, "user_id": 909}, "write"),
+    ("unban_user", {"chat_id": -1001, "user_id": 909}, "write"),
+    ("remove_user", {"chat_id": -1001, "user_id": 909}, "write"),
+    ("promote_admin", {"group_id": -1001, "user_id": 909}, "write"),
+    ("demote_admin", {"group_id": -1001, "user_id": 909}, "write"),
+    ("edit_admin_rights", {"chat_id": -1001, "user_id": 909, "ban_users": True}, "write"),
+    ("get_member_admin_status", {"chat_id": -1001, "user_id": 909}, "read"),
+    ("invite_to_group", {"group_id": -1001, "user_ids": [909, "@stranger"]}, "write"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, kwargs, mode", MEMBER_CALLS)
+async def test_member_tools_accept_a_user_outside_the_allowlist(monkeypatch, name, kwargs, mode):
+    """The chat is allowed, the member is not on any list: the call reaches the tool body."""
+    env = "TELEGRAM_ALLOWED_READ_CHATS" if mode == "read" else "TELEGRAM_ALLOWED_WRITE_CHATS"
+    allow(monkeypatch, **{env: "-1001"})
+    reached = []
+
+    def reaching_client(account=None):
+        reached.append(name)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(groups, "get_client", reaching_client)
+    monkeypatch.setattr(runtime, "get_client", reaching_client)
+
+    result = await getattr(groups, name)(**kwargs)
+
+    assert "restricted by privacy policy" not in result
+    assert reached == [name]
+
+
+@pytest.mark.asyncio
+async def test_member_tools_still_refuse_a_chat_outside_the_allowlist(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="-1001")
+
+    result = await groups.ban_user(chat_id=-1999, user_id=909)
+
+    assert "Write access to chat '-1999' is restricted" in result
