@@ -117,8 +117,9 @@ async def test_allowed_already_invite_passes_gate(monkeypatch, tool):
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "-1000000000222")
     client = _FakeClient(_already(_channel(222)))
     result = await _call(tool, client, monkeypatch)
-    assert "restricted" not in result
-    assert client.checks >= 1
+    assert "already a member" in result
+    assert client.imports == 0
+    assert client.checks == 1
 
 
 @pytest.mark.asyncio
@@ -176,8 +177,29 @@ async def test_allowed_peek_invite_passes_gate(monkeypatch, tool):
     monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "-1000000000222")
     client = _FakeClient(types.ChatInvitePeek(chat=_channel(222), expires=0))
     result = await _call(tool, client, monkeypatch)
-    assert "restricted" not in result
-    assert client.checks >= 1
+    assert "Successfully joined" in result
+    assert client.imports == 1
+    assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_peek_invite_joins_without_allowlist(monkeypatch, tool):
+    client = _FakeClient(types.ChatInvitePeek(chat=_channel(222), expires=0))
+    result = await _call(tool, client, monkeypatch)
+    assert "Successfully joined" in result
+    assert client.imports == 1
+    assert client.checks == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_already_invite_without_allowlist_is_not_reimported(monkeypatch, tool):
+    client = _FakeClient(_already(_channel(222)))
+    result = await _call(tool, client, monkeypatch)
+    assert "already a member" in result
+    assert client.imports == 0
+    assert client.checks == 1
 
 
 @pytest.mark.asyncio
