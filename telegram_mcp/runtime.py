@@ -1327,6 +1327,16 @@ def _matches_chat_allowlist(
         if username and str(username).lower() in allowed:
             return True
 
+        # Secondary / collectible usernames: only entries Telegram marks active
+        # (inactive ones are not resolvable and may be taken by someone else). An
+        # entity without ``usernames`` (min entities) simply does not match.
+        extra = getattr(entity, "usernames", None)
+        if isinstance(extra, (list, tuple)):
+            for item in extra:
+                name = getattr(item, "username", None)
+                if getattr(item, "active", None) is True and name and str(name).lower() in allowed:
+                    return True
+
     return False
 
 
@@ -1339,8 +1349,9 @@ def is_chat_allowed(
     events), "write" (sending, editing, administering) or "both".
 
     Integer identifiers are compared as marked IDs (see
-    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID and
-    username only. Its bare ``id`` is never used: the same number is a
+    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID, its
+    username and its active secondary usernames (``entity.usernames``; ``active`` ones only, a
+    missing list never matches). Its bare ``id`` is never used: the same number is a
     different chat in the user, basic-group and channel namespaces.
 
     If no chat allowlist is configured, always returns True.

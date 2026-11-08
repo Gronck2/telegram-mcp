@@ -1756,7 +1756,9 @@ SECONDARY = types.User(
     id=303,
     first_name="Sec",
     username=None,
-    usernames=[types.Username(username="foo_user", editable=False, active=True)],
+    # inactive here: only the identifier the caller gave may match (see test_chat_allowlist
+    # for the active case, which the allowlist matches by itself)
+    usernames=[types.Username(username="foo_user", editable=False, active=False)],
     access_hash=3,
     phone="79995554433",
 )

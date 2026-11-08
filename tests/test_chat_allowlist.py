@@ -957,3 +957,63 @@ def test_unsupported_type_is_unset():
 
 def test_phone_with_valid_entry():
     assert _parse_allowed_chat_ids("+7999123, 5") == {"+7999123", 5}
+
+
+# ---------------------------------------------------------------------------
+# Task 0003: active secondary usernames match, inactive ones and absence do not
+# ---------------------------------------------------------------------------
+
+
+def _user_with(usernames):
+    return User(id=900, access_hash=1, first_name="X", username=None, usernames=usernames)
+
+
+def test_secondary_active_username_matches(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "@Foo_User")
+    user = _user_with([types.Username(username="foo_user", editable=False, active=True)])
+
+    assert is_chat_allowed(900, user) is True
+    assert is_chat_allowed(user.id + 1, _user_with([])) is False
+
+
+def test_secondary_inactive_username_does_not_match(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "@foo_user")
+    user = _user_with([types.Username(username="foo_user", editable=True, active=False)])
+
+    assert is_chat_allowed(777, user) is False
+
+
+def test_entity_without_usernames_fails_closed(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "@foo_user")
+
+    assert is_chat_allowed(777, _user_with(None)) is False
+    assert is_chat_allowed(777, SimpleNamespace(id=1, usernames="foo_user")) is False
+    assert (
+        is_chat_allowed(
+            777, SimpleNamespace(id=1, usernames=[SimpleNamespace(username="foo_user")])
+        )
+        is False
+    )
+
+
+def test_channel_secondary_username_matches(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "@news_alt")
+    channel = Channel(
+        id=9,
+        title="News",
+        photo=None,
+        date=None,
+        username="news",
+        usernames=[types.Username(username="news_alt", editable=False, active=True)],
+    )
+
+    assert is_chat_allowed(0, channel) is True
+
+
+def test_secondary_username_follows_access_mode(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_READ_CHATS", "@foo_user")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "5")
+    user = _user_with([types.Username(username="foo_user", editable=False, active=True)])
+
+    assert is_chat_allowed(0, user, "read") is True
+    assert is_chat_allowed(0, user, "write") is False
