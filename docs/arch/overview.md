@@ -36,6 +36,15 @@ Keep this file up to date when a change alters it.
    `vote_poll`: read and write). A non-blank value with no valid entry denies
    all; `@*` is not the wildcard. While a list is set, invite joins resolve the
    invite first and need write access to its chat (plain invites are refused).
+   Tools that name a user rather than a chat are covered by peer helpers in
+   `runtime.py` (ADR 0002): `validate_id(..., peer_subject=True)` /
+   `require_peer_access` check the user as their private chat in the tool's
+   mode; contact-book listings are refused while read access is restricted
+   (`refuse_if_read_restricted`, read list without `*`); lookups outside read
+   access return `public_view` (id, type, name, usernames, bot flag, badges).
+   Member `user_id` parameters of group-admin tools are deliberately not
+   checked. `tests/test_peer_allowlist.py` fails on a registered tool with a
+   peer-naming parameter that is not classified.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.
 4. **HTTP transport security** — Host/Origin validation always on
