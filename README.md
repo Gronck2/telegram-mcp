@@ -858,11 +858,21 @@ TELEGRAM_ALLOWED_WRITE_CHATS=-100999999999
 ### What is enforced
 
 When any chat allowlist is set:
-- **`list_chats` / `get_chats`:** Only chats the agent may read are returned; all other conversations remain completely invisible to the agent.
+- **`list_chats` / `get_chats`:** Only chats the agent may read are returned. Other conversations are not listed, and no tool shows their messages; a single peer can still be looked up by name and then shows only a public view (below).
 - **Messaging & Chat Tools (`send_message`, `get_messages`, `get_chat`, `create_poll`, etc.):** Any attempt to use a chat without the needed access is rejected with a structured error message, e.g. `Write access to chat '<chat_id>' is restricted by privacy policy (TELEGRAM_ALLOWED_CHAT_IDS / TELEGRAM_ALLOWED_WRITE_CHATS)`.
 - **Search & Drafts (`search_global`, `get_drafts`):** Global searches and draft listings omit unallowed conversations.
 - **Contact, folder & group-admin tools:** a chat named by `contact_id` or `group_id` (`get_last_interaction`, `get_contact_chats`, `invite_to_group`, `promote_admin`, `demote_admin`) is checked like `chat_id`; `get_common_chats`, `get_contact_chats`, `get_direct_chat_by_contact` and `get_folder` leave unallowed chats out of their results; `create_folder` refuses `chat_ids` without write access.
 - **Incoming Events:** Notifications and debounce feeds only process events from readable chats.
+
+### Contacts, lookups and acting on users
+
+A user is judged as their private chat: user `101` is allowed when `101` (or their `@username`, when the tool is given the username) is on the list for the needed mode.
+
+- **Contact-book listings are refused while read access is restricted.** `list_contacts`, `search_contacts`, `export_contacts`, `get_contact_ids` and `get_blocked_users` return the privacy error and make no Telegram request when a chat allowlist is set and the effective read list has no `*`. With read access to every chat (`TELEGRAM_ALLOWED_READ_CHATS=*` or `TELEGRAM_ALLOWED_CHAT_IDS=*`) nothing is hidden, so they work even when the write list is narrow. `list_contact_aliases` lists only aliases whose contact is readable (matched by ID), without saying how many were left out.
+- **Lookups of one named peer show a public view outside read access.** `resolve_username`, `get_full_user`, `get_bot_info`, `resolve_phone` and the users named in `get_privacy_settings` return only: `id`, `type` (user, bot, group, channel), first/last name or title, username(s), a bot flag and badges (verified, scam, fake, premium). Phone, bio, photos, last seen, birthday, personal channel, common-chats count, contact flags and bot descriptions are never shown for such a peer; inside read access the output is unchanged. `resolve_phone` still spends its lookup quota. `get_user_photos` and `get_user_status` have nothing public to show and are refused outside read access.
+- **Acting on a user needs write access to their private chat:** `block_user`, `unblock_user`, `delete_contact`, `set_privacy_settings` (`allow_users`, `disallow_users`), `set_bot_commands`, `set_default_send_as` (`send_as`), `forward_message` (`send_as`), `set_contact_alias` (`chat_id`) and `add_contact` by username. `"me"` as a sender is always allowed.
+- **Not gated:** `add_contact` by phone and `import_contacts` (any user details they return follow the public-view rule). `user_id` / `user_ids` of member tools inside an allowed chat (`ban_user`, `unban_user`, `remove_user`, `promote_admin`, `demote_admin`, `edit_admin_rights`, `get_member_admin_status`, `invite_to_group`) are not checked: the chat is, and a member need not be on any list.
+- **`get_send_as`** is checked like any chat tool (read access to `chat_id`) but returns the sender identities Telegram offers for that chat, which can include channels that are not on the allowlist; use `set_default_send_as` (write access to the sender) to pick one.
 
 If none of the three variables is set (or all are empty), the server operates in unrestricted mode (default), preserving 100% backward compatibility.
 
