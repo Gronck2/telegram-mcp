@@ -854,6 +854,7 @@ TELEGRAM_ALLOWED_WRITE_CHATS=-100999999999
 - Each tool's mode follows its MCP annotations: read-only tools (the ones `TELEGRAM_EXPOSED_TOOLS=read-only` keeps) need read access, every other tool needs write access. `download_media`, `export_chat_history` and `export_unread_messages` only read the chat (they write local files) and need read access. `forward_message` / `forward_messages` need read access to `from_chat_id` and write access to `to_chat_id`; `vote_poll` needs both.
 - Listings and incoming events (`list_chats`, `get_chats`, `search_global`, `get_drafts`, `wait_for_events`, the incoming feed) show readable chats only; a write-only chat is used by its ID.
 - Prefer numeric IDs over usernames: a username can be changed and later claimed by a different chat, an ID cannot.
+- An allowlisted `@username` matches a chat or user by its primary username, by any active secondary (collectible) username, and by the username given to a tool that resolved to that peer (`add_contact`, `get_full_user`, `get_bot_info`, `resolve_username`). Deactivated usernames never match, and an entity that does not report its usernames does not match (fail closed). Local alias wording never matches by string. A released username can be taken by someone else, who then inherits the entry: prefer numeric IDs.
 
 ### What is enforced
 

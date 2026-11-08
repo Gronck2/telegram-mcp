@@ -42,6 +42,11 @@ Keep this file up to date when a change alters it.
    mode; contact-book listings are refused while read access is restricted
    (`refuse_if_read_restricted`, read list without `*`); lookups outside read
    access return `public_view` (id, type, name, usernames, bot flag, badges).
+   Username entries match the entity's primary username, its active
+   `usernames` entries (never inactive ones; no `usernames` means no match) and
+   the @username a lookup tool was given (`peer_allowed(..., identifier=)`,
+   only for real handles, never alias wording). A released username can be
+   claimed by someone else, so prefer numeric ids in the allowlist.
    Member `user_id` parameters of group-admin tools are deliberately not
    checked. `tests/test_peer_allowlist.py` fails on a registered tool with a
    peer-naming parameter that is not classified.
