@@ -2009,3 +2009,150 @@ async def test_add_contact_picks_the_resolved_peer_among_several_users(monkeypat
     assert "added successfully" in result
     add = [r for r in actions.requests if type(r).__name__ == "AddContactRequest"]
     assert len(add) == 1 and add[0].id.user_id == IVAN.id
+
+
+# ---------------------------------------------------------------------------
+# Task 0003 round 2: peer selection for chats, empty results, unrestricted output
+# ---------------------------------------------------------------------------
+
+
+def _channel(cid, title, username=None):
+    return types.Channel(id=cid, title=title, photo=None, date=None, username=username)
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_picks_the_channel_by_peer_among_several(
+    monkeypatch, username_client
+):
+    a, b = _channel(8, "Other", "other"), _channel(9, "Wanted", "wanted")
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerChannel(channel_id=9), users=[], chats=[a, b]
+    )
+
+    data = json.loads(await chats.resolve_username("wanted"))
+
+    assert data["title"] == "Wanted" and data["id"] == -1000000000009
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_picks_the_basic_group_by_peer_among_several(
+    monkeypatch, username_client
+):
+    g1 = types.Chat(
+        id=5,
+        title="G5",
+        photo=None,
+        participants_count=1,
+        date=None,
+        version=1,
+    )
+    g2 = types.Chat(
+        id=6,
+        title="G6",
+        photo=None,
+        participants_count=1,
+        date=None,
+        version=1,
+    )
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerChat(chat_id=6), users=[], chats=[g1, g2]
+    )
+
+    data = json.loads(await chats.resolve_username("grp"))
+
+    assert data["title"] == "G6" and data["id"] == -6
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "peer",
+    [types.PeerUser(user_id=101), types.PeerChannel(channel_id=9), types.PeerChat(chat_id=6)],
+)
+async def test_resolve_username_peer_with_empty_users_and_chats_is_not_described(
+    monkeypatch, username_client, peer
+):
+    username_client.return_value = SimpleNamespace(peer=peer, users=[], chats=[])
+
+    data = json.loads(await chats.resolve_username("ghost"))
+
+    assert "first_name" not in data and "title" not in data and "phone" not in data
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_unrestricted_output_unchanged(monkeypatch, username_client):
+    data = json.loads(await chats.resolve_username("@ivan_k"))
+
+    assert data["id"] == 101
+    assert data["first_name"] == "Ivan" and data["last_name"] == "Petrov"
+    assert data["username"] == "ivan_k" and data["verified"] is True
+    assert data["is_bot"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_unrestricted_channel_full_details(monkeypatch, username_client):
+    ch = _channel(9, "Wanted", "wanted")
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerChannel(channel_id=9), users=[], chats=[ch]
+    )
+
+    data = json.loads(await chats.resolve_username("wanted"))
+
+    assert data["title"] == "Wanted"
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_identifier_for_a_different_object_gives_no_details(
+    monkeypatch, username_client
+):
+    """Allowlisted string, but the peer points to a user that is not the one in the list."""
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerUser(user_id=RICH.id), users=[SECONDARY], chats=[]
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    text = await chats.resolve_username("foo_user")
+
+    assert "79995554433" not in text and "Sec" not in text
+    assert "first_name" not in json.loads(text)
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_matching_peer_outside_read_with_other_identifier(
+    monkeypatch, username_client
+):
+    """The matching entity is not allowlisted; the listed identifier belongs to someone else."""
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@someone_else")
+
+    text = await chats.resolve_username("ivan_k")
+
+    assert_public_only(text)
+
+
+@pytest.mark.asyncio
+async def test_add_contact_with_channel_peer_is_not_a_user(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        return SimpleNamespace(
+            peer=types.PeerChannel(channel_id=9), users=[IVAN], chats=[_channel(9, "C")]
+        )
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+
+    result = await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert "not a user" in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_peer_user_without_matching_user_is_not_found(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        return SimpleNamespace(peer=types.PeerUser(user_id=999), users=[IVAN])
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+
+    result = await contacts.add_contact(username="ivan_k", first_name="Ivan")
+
+    assert "not found" in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
