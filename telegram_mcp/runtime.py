@@ -1411,11 +1411,36 @@ def check_chat_access(
 
 
 def _is_username_identifier(identifier: Any) -> bool:
-    """True for a string that is a real @username (not alias wording, id, phone or "me")."""
+    """True for a string Telethon resolves as a real @username.
+
+    Excludes ids, phones, "me"/"self" and alias wording. Strings that merely look
+    like a handle but that ``utils.parse_username`` rejects (``abcde_``, ``1abcde``,
+    ``ab__cde``, over 32 characters) are not usernames: Telethon would look them up
+    by display name in its cache instead of via ResolveUsernameRequest.
+    """
     if not isinstance(identifier, str) or not is_handle_like(identifier):
         return False
     bare = identifier.strip().lstrip("@")
-    return not (bare.lstrip("-").isdigit() or bare.lower() in _SELF_REFS or "+" in identifier)
+    if bare.lstrip("-").isdigit() or bare.lower() in _SELF_REFS or "+" in identifier:
+        return False
+    name, is_invite = utils.parse_username(identifier)
+    return bool(name) and not is_invite
+
+
+def _entity_holds_username(entity: Any, identifier: str) -> bool:
+    """True if ``identifier`` is the primary username or a listed secondary one of ``entity``.
+
+    Defence in depth for the identifier grant: the resolved peer must itself carry the
+    string (guards against a display-name or stale-cache hit). Fails closed when a min
+    entity lacks the lists. ``active`` is not required here: Telegram resolves only
+    active names, so the allowlist match itself still decides.
+    """
+    wanted = identifier.strip().lstrip("@").lower()
+    names = [getattr(entity, "username", None)]
+    usernames = getattr(entity, "usernames", None)
+    if isinstance(usernames, (list, tuple)):
+        names += [getattr(item, "username", None) for item in usernames]
+    return any(isinstance(name, str) and name.lower() == wanted for name in names)
 
 
 def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ, identifier: Any = None) -> bool:
@@ -1444,7 +1469,11 @@ def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ, identifier: Any = 
         return False
     if is_chat_allowed(marked_id, entity, access):
         return True
-    return _is_username_identifier(identifier) and is_chat_allowed(identifier, entity, access)
+    return (
+        _is_username_identifier(identifier)
+        and _entity_holds_username(entity, identifier)
+        and is_chat_allowed(identifier, entity, access)
+    )
 
 
 def read_access_restricted() -> bool:

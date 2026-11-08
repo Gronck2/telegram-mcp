@@ -2156,3 +2156,64 @@ async def test_add_contact_peer_user_without_matching_user_is_not_found(monkeypa
 
     assert "not found" in result
     assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+# ---------------------------------------------------------------------------
+# Task 0003 review round 2: only strings Telethon resolves as usernames grant
+# ---------------------------------------------------------------------------
+
+_NOT_USERNAMES = ["abcde_", "1abcde", "ab__cde", "@abcde_", "a" * 33]
+
+
+@pytest.mark.parametrize("identifier", _NOT_USERNAMES)
+def test_peer_allowed_identifier_rejected_by_telethon_never_grants(monkeypatch, identifier):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS=identifier)
+    entity = types.User(
+        id=404,
+        first_name=identifier,
+        username=None,
+        usernames=[types.Username(username=identifier.lstrip("@"), editable=False, active=False)],
+        access_hash=4,
+    )
+    # the allowlist itself may hold the string; as an identifier it is not a username
+    assert runtime._is_username_identifier(identifier) is False
+    assert runtime.peer_allowed(entity, runtime.CHAT_ACCESS_READ, identifier) is False
+
+
+def test_valid_username_identifier_still_grants(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@abcde")
+    entity = types.User(id=405, first_name="V", username="Abcde", access_hash=5)
+
+    assert runtime._is_username_identifier("@abcde") is True
+    assert runtime._is_username_identifier("a" * 32) is True
+    assert runtime.peer_allowed(entity, runtime.CHAT_ACCESS_READ, "abcde") is True
+
+
+def test_peer_allowed_identifier_entity_not_holding_username_is_denied(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    other = types.User(id=406, first_name="foo_user", username="someone_else", access_hash=6)
+    no_names = types.User(id=407, first_name="foo_user", username=None, access_hash=7)
+
+    assert runtime.peer_allowed(other, runtime.CHAT_ACCESS_READ, "foo_user") is False
+    assert runtime.peer_allowed(no_names, runtime.CHAT_ACCESS_READ, "foo_user") is False
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_entity_not_holding_username_is_public_view(
+    monkeypatch, profile_client
+):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    stranger = types.User(id=408, first_name="foo_user", username=None, access_hash=8)
+
+    async def resolve(identifier, c=None):
+        return stranger
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    profile_client.return_value = SimpleNamespace(
+        users=[stranger], full_user=full_user_response().full_user
+    )
+
+    data = json.loads(await profile.get_full_user("foo_user"))
+
+    assert "bio" not in data
+    assert "SECRET-BIO" not in json.dumps(data)
