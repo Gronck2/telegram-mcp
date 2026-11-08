@@ -35,14 +35,14 @@ def is_chat_allowlist_enabled() -> bool:
     return _runtime.is_chat_allowlist_enabled()
 
 
-def is_chat_allowed(chat_identifier=None, entity=None) -> bool:
+def is_chat_allowed(chat_identifier=None, entity=None, access=_runtime.CHAT_ACCESS_READ) -> bool:
     _sync_runtime_chat_allowlist()
-    return _runtime.is_chat_allowed(chat_identifier, entity)
+    return _runtime.is_chat_allowed(chat_identifier, entity, access)
 
 
-def check_chat_access(chat_identifier=None, entity=None):
+def check_chat_access(chat_identifier=None, entity=None, access=_runtime.CHAT_ACCESS_READ):
     _sync_runtime_chat_allowlist()
-    return _runtime.check_chat_access(chat_identifier, entity)
+    return _runtime.check_chat_access(chat_identifier, entity, access)
 
 
 async def _get_effective_allowed_roots(ctx):

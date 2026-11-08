@@ -701,9 +701,12 @@ async def create_folder(
                 if (
                     is_chat_allowlist_enabled()
                     and not isinstance(peer, types.InputPeerSelf)
-                    and not (is_chat_allowed(chat_id) or is_chat_allowed(utils.get_peer_id(peer)))
+                    and not (
+                        is_chat_allowed(chat_id, access=CHAT_ACCESS_WRITE)
+                        or is_chat_allowed(utils.get_peer_id(peer), access=CHAT_ACCESS_WRITE)
+                    )
                 ):
-                    return check_chat_access(chat_id)
+                    return check_chat_access(chat_id, access=CHAT_ACCESS_WRITE)
                 include_peers.append(peer)
 
         # Create the folder (title must be TextWithEntities)

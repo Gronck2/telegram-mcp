@@ -26,6 +26,8 @@
         "TELEGRAM_API_HASH": "${user_config.api_hash}",
         "TELEGRAM_SESSION_STRING": "${user_config.session_string}",
         "TELEGRAM_ALLOWED_CHAT_IDS": "${user_config.allowed_chat_ids}",
+        "TELEGRAM_ALLOWED_READ_CHATS": "${user_config.allowed_read_chats}",
+        "TELEGRAM_ALLOWED_WRITE_CHATS": "${user_config.allowed_write_chats}",
         "TELEGRAM_ALLOWED_ROOTS": "${user_config.allowed_root}"
       }
     }
@@ -55,6 +57,20 @@
       "type": "string",
       "title": "Allowed chats",
       "description": "Optional comma-separated chat IDs or @usernames. When set, every other chat is hidden from Claude. Use marked IDs: groups as -4567, channels/supergroups as -100123456789; a bare positive number means a user.",
+      "required": false,
+      "default": ""
+    },
+    "allowed_read_chats": {
+      "type": "string",
+      "title": "Read-only chats",
+      "description": "Optional extra chats Claude may read but not write to (same format; * = all). Once any chat list is set, chats in no list are blocked.",
+      "required": false,
+      "default": ""
+    },
+    "allowed_write_chats": {
+      "type": "string",
+      "title": "Write-only chats",
+      "description": "Optional extra chats Claude may send to and change but not read (same format; * = all). Once any chat list is set, chats in no list are blocked.",
       "required": false,
       "default": ""
     },

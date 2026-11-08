@@ -218,7 +218,7 @@ Clients that can wake an agent on external output (Claude Code's persistent `Mon
 
 ### Per-message events (chat bridges)
 
-Every new message of a private chat, basic group or supergroup gets one numbered event in a bounded in-memory log (`TELEGRAM_EVENT_LOG_SIZE`, default 2000; `0` turns it off). Incoming messages count, and so do the owner's own messages sent from another device; messages this server sent itself do not. Broadcast channels are left out, and so are chats outside `TELEGRAM_ALLOWED_CHAT_IDS` when it is set. Events carry no text and nothing is written to disk.
+Every new message of a private chat, basic group or supergroup gets one numbered event in a bounded in-memory log (`TELEGRAM_EVENT_LOG_SIZE`, default 2000; `0` turns it off). Incoming messages count, and so do the owner's own messages sent from another device; messages this server sent itself do not. Broadcast channels are left out, and so are chats the [chat allowlists](#chat-access-privacy-allowlist) do not let the agent read. Events carry no text and nothing is written to disk.
 
 - `wait_for_events(chat_id?, after_seq, boot?, timeout, limit, account?)` long-polls: it returns as soon as there are events after `after_seq` (at most 100 s, under typical proxy timeouts; keep `timeout` under your MCP client's request timeout). `after_seq=-1` starts from now without replaying the log. An event has `seq`, `chat_id`, `chat_type`, `message_id`, `sender_id`, `sender_name`, `sender_bot`, `out`, `addressed` (private chats always, groups when Telegram marks the message as mentioning the account or replying to it; never the owner's own), `topic` (the forum topic's id, 1 for General; absent outside forums), `reply_to`, `service` and `date`; with several accounts it also names its `account`. Always pass back `boot` and `last_seq`; `reset` (the server restarted) or `gap` (the log overflowed; global, not per chat) means: read every chat you follow from your last message id, then continue.
 - `get_messages_after(chat_id, after_id?, limit)` returns the messages after an id, oldest first, as the `list_messages` records plus `out`, `mentioned`, `addressed`, `date`, `topic` in forums and `action` for service messages. The result has `chat_id`, `chat_type`, `has_more` (newer messages remain with `after_id`, older ones exist without it), `messages` and, in a forum, one `topics` map of topic id to title. A negative `after_id` is rejected.
@@ -447,8 +447,9 @@ Open the resulting `telegram-mcp.mcpb` with Claude Desktop (or drag it onto
 Settings → Extensions) and fill in the API ID, API hash and session string
 (see [Quick Start](#quick-start) for generating one). Claude Desktop installs
 Python and the dependencies itself via `uv`, and masks the API hash and
-session string as sensitive fields. The allowed-chats and files-directory fields map to
-`TELEGRAM_ALLOWED_CHAT_IDS` and `TELEGRAM_ALLOWED_ROOTS`. `.mcpbignore` keeps
+session string as sensitive fields. The allowed-chats, read-only chats, write-only chats and
+files-directory fields map to `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ALLOWED_READ_CHATS`,
+`TELEGRAM_ALLOWED_WRITE_CHATS` and `TELEGRAM_ALLOWED_ROOTS`. `.mcpbignore` keeps
 `.env`, session files and logs out of the bundle.
 
 ### Manual configuration
@@ -834,14 +835,34 @@ TELEGRAM_ALLOWED_CHAT_IDS=12345678,-100123456789,-4567,@allowed_channel
 
 Numeric IDs are matched exactly in Telegram's marked form, the same `chat_id` the tools return: a user is `12345678`, a basic group `-4567`, a channel or supergroup `-100123456789`. Users, basic groups and channels have separate ID namespaces, so the same bare number can be three unrelated chats; an entry is never widened to another type (allowing channel `-100123456789` does not allow user `123456789`). Write groups and channels with their `-`/`-100` prefix: a bare positive number only ever means a user.
 
-When `TELEGRAM_ALLOWED_CHAT_IDS` is set:
-- **`list_chats` / `get_chats`:** Only chats matching the allowlist are returned; all other conversations remain completely invisible to the agent.
-- **Messaging & Chat Tools (`send_message`, `get_messages`, `get_chat`, `create_poll`, etc.):** Any attempt to interact with a chat outside the allowlist is rejected with a structured error message: `Access to chat '<chat_id>' is restricted by privacy policy (TELEGRAM_ALLOWED_CHAT_IDS)`.
-- **Search & Drafts (`search_global`, `get_drafts`):** Global searches and draft listings omit unallowed conversations.
-- **Contact, folder & group-admin tools:** a chat named by `contact_id` or `group_id` (`get_last_interaction`, `get_contact_chats`, `invite_to_group`, `promote_admin`, `demote_admin`) is checked like `chat_id`; `get_common_chats`, `get_contact_chats`, `get_direct_chat_by_contact` and `get_folder` leave unallowed chats out of their results; `create_folder` refuses unallowed `chat_ids`.
-- **Incoming Events:** Notifications and debounce feeds only process events from allowed chats.
+### Separate read and write access
 
-If `TELEGRAM_ALLOWED_CHAT_IDS` is unset or empty, the server operates in unrestricted mode (default), preserving 100% backward compatibility.
+`TELEGRAM_ALLOWED_CHAT_IDS` grants both reading and writing. To give an agent different rights per chat, add one or both per-mode lists (same format):
+
+```env
+# Chats the agent may read: history, search, media, events
+TELEGRAM_ALLOWED_READ_CHATS=-100123456789,-4567
+# Chats the agent may change: send, edit, delete, react, pin, administer
+TELEGRAM_ALLOWED_WRITE_CHATS=-100999999999
+```
+
+- A chat's read access is `TELEGRAM_ALLOWED_CHAT_IDS` plus `TELEGRAM_ALLOWED_READ_CHATS`; its write access is `TELEGRAM_ALLOWED_CHAT_IDS` plus `TELEGRAM_ALLOWED_WRITE_CHATS`. Write access does not imply read access, so a write-only chat can receive reports the agent cannot read back.
+- **Fail closed:** once any of the three variables is set, both modes are restricted. Setting only `TELEGRAM_ALLOWED_READ_CHATS` makes the agent read-only on those chats and unable to write anywhere.
+- `*` allows every chat for that list, e.g. `TELEGRAM_ALLOWED_READ_CHATS=*` with a narrow `TELEGRAM_ALLOWED_WRITE_CHATS` lets the agent read everything but post only to the listed chats.
+- Each tool's mode follows its MCP annotations: read-only tools (the ones `TELEGRAM_EXPOSED_TOOLS=read-only` keeps) need read access, every other tool needs write access. `download_media`, `export_chat_history` and `export_unread_messages` only read the chat (they write local files) and need read access. `forward_message` / `forward_messages` need read access to `from_chat_id` and write access to `to_chat_id`; `vote_poll` needs both.
+- Listings and incoming events (`list_chats`, `get_chats`, `search_global`, `get_drafts`, `wait_for_events`, the incoming feed) show readable chats only; a write-only chat is used by its ID.
+- Prefer numeric IDs over usernames: a username can be changed and later claimed by a different chat, an ID cannot.
+
+### What is enforced
+
+When any chat allowlist is set:
+- **`list_chats` / `get_chats`:** Only chats the agent may read are returned; all other conversations remain completely invisible to the agent.
+- **Messaging & Chat Tools (`send_message`, `get_messages`, `get_chat`, `create_poll`, etc.):** Any attempt to use a chat without the needed access is rejected with a structured error message, e.g. `Write access to chat '<chat_id>' is restricted by privacy policy (TELEGRAM_ALLOWED_CHAT_IDS / TELEGRAM_ALLOWED_WRITE_CHATS)`.
+- **Search & Drafts (`search_global`, `get_drafts`):** Global searches and draft listings omit unallowed conversations.
+- **Contact, folder & group-admin tools:** a chat named by `contact_id` or `group_id` (`get_last_interaction`, `get_contact_chats`, `invite_to_group`, `promote_admin`, `demote_admin`) is checked like `chat_id`; `get_common_chats`, `get_contact_chats`, `get_direct_chat_by_contact` and `get_folder` leave unallowed chats out of their results; `create_folder` refuses `chat_ids` without write access.
+- **Incoming Events:** Notifications and debounce feeds only process events from readable chats.
+
+If none of the three variables is set (or all are empty), the server operates in unrestricted mode (default), preserving 100% backward compatibility.
 
 ## Deletion Audit Log (Recent Actions for Private Chats)
 

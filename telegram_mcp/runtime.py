@@ -1152,6 +1152,25 @@ ALLOWED_CHAT_IDS: Optional[set[Union[int, str]]] = None
 # A marked chat ID: optional minus sign, digits only. A leading "+" is a phone
 # number, not an ID, and must go through entity resolution instead.
 _NUMERIC_CHAT_ID_RE = re.compile(r"-?\d+")
+CHAT_ALLOWLIST_WILDCARD = "*"
+
+# Access modes for the per-chat allowlists. TELEGRAM_ALLOWED_CHAT_IDS grants
+# both; TELEGRAM_ALLOWED_READ_CHATS / TELEGRAM_ALLOWED_WRITE_CHATS grant one.
+CHAT_ACCESS_READ = "read"
+CHAT_ACCESS_WRITE = "write"
+CHAT_ACCESS_BOTH = "both"
+_CHAT_ACCESS_ENV = {
+    CHAT_ACCESS_READ: "TELEGRAM_ALLOWED_READ_CHATS",
+    CHAT_ACCESS_WRITE: "TELEGRAM_ALLOWED_WRITE_CHATS",
+}
+# Parameters that only ever read the chat they name, whatever the tool does
+# with the result (forward_message reads from_chat_id, writes to_chat_id).
+READ_CHAT_PARAM_NAMES: frozenset[str] = frozenset({"from_chat_id"})
+# Tools flagged as not read-only because they write a local file, while what
+# they do to the chat itself is read its content.
+READ_ACCESS_TOOLS: frozenset[str] = frozenset(
+    {"download_media", "export_chat_history", "export_unread_messages"}
+)
 # Every parameter that names a chat the tool reads or changes, whatever it is called:
 # contact_id is the private chat with that contact, group_id the group being administered.
 # user_id stays out: it names a member acted on inside an already-checked chat.
@@ -1175,6 +1194,9 @@ def _parse_allowed_chat_ids(
     bare number can name unrelated chats of different types. Each entry is kept
     exactly as written and never widened to other peer types: allowing channel
     ``-100123456789`` must not also allow user ``123456789``.
+
+    A lone ``*`` entry allows every chat (meaningful for the per-mode lists,
+    e.g. TELEGRAM_ALLOWED_READ_CHATS=* with a narrow write list).
     """
     if raw is None:
         return None
@@ -1193,6 +1215,9 @@ def _parse_allowed_chat_ids(
 
     allowed: set[Union[int, str]] = set()
     for token in tokens:
+        if token == CHAT_ALLOWLIST_WILDCARD:
+            allowed.add(CHAT_ALLOWLIST_WILDCARD)
+            continue
         if _NUMERIC_CHAT_ID_RE.fullmatch(token):
             allowed.add(int(token))
             continue
@@ -1213,30 +1238,43 @@ ALLOWED_CHAT_IDS = _load_allowed_chat_ids()
 
 
 def get_effective_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
-    """Return the currently effective set of allowed chat IDs, or None if allowlist is disabled."""
+    """Return TELEGRAM_ALLOWED_CHAT_IDS (read and write access), or None if unset."""
     env_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS")
     if env_raw is not None:
         return _parse_allowed_chat_ids(env_raw)
     return ALLOWED_CHAT_IDS
 
 
-def is_chat_allowlist_enabled() -> bool:
-    """Return True if chat allowlist filtering is active."""
-    return get_effective_allowed_chat_ids() is not None
+def _mode_allowed_chat_ids(access: str) -> Optional[set[Union[int, str]]]:
+    return _parse_allowed_chat_ids(os.getenv(_CHAT_ACCESS_ENV[access]))
 
 
-def is_chat_allowed(chat_identifier: Any, entity: Any = None) -> bool:
-    """Check whether a chat identifier or entity is permitted by the allowlist.
+def get_chat_allowlist(access: str) -> Optional[set[Union[int, str]]]:
+    """Return the chats allowed for ``access`` ("read" or "write").
 
-    Integer identifiers are compared as marked IDs (see
-    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID and
-    username only. Its bare ``id`` is never used: the same number is a
-    different chat in the user, basic-group and channel namespaces.
-
-    If allowlist is not enabled, always returns True.
+    None means unrestricted: no chat allowlist variable is set at all. Once any
+    of TELEGRAM_ALLOWED_CHAT_IDS / _READ_CHATS / _WRITE_CHATS is set, both modes
+    are restricted (fail closed): a mode whose own variable is unset gets only
+    the TELEGRAM_ALLOWED_CHAT_IDS entries, possibly none.
     """
-    allowed = get_effective_allowed_chat_ids()
-    if allowed is None:
+    if access not in _CHAT_ACCESS_ENV:
+        raise ValueError(f"Unknown chat access mode: {access!r}")
+    shared = get_effective_allowed_chat_ids()
+    per_mode = {mode: _mode_allowed_chat_ids(mode) for mode in _CHAT_ACCESS_ENV}
+    if shared is None and all(v is None for v in per_mode.values()):
+        return None
+    return set(shared or ()) | set(per_mode[access] or ())
+
+
+def is_chat_allowlist_enabled() -> bool:
+    """Return True if chat allowlist filtering is active (for any access mode)."""
+    return get_chat_allowlist(CHAT_ACCESS_READ) is not None
+
+
+def _matches_chat_allowlist(
+    allowed: set[Union[int, str]], chat_identifier: Any, entity: Any
+) -> bool:
+    if CHAT_ALLOWLIST_WILDCARD in allowed:
         return True
 
     if chat_identifier is not None and not isinstance(chat_identifier, bool):
@@ -1268,14 +1306,70 @@ def is_chat_allowed(chat_identifier: Any, entity: Any = None) -> bool:
     return False
 
 
-def check_chat_access(chat_identifier: Any, entity: Any = None) -> Optional[str]:
-    """Return an error message if chat access is restricted, or None if allowed."""
-    if not is_chat_allowed(chat_identifier, entity):
-        return (
-            f"Access to chat '{chat_identifier}' is restricted by privacy policy "
-            "(TELEGRAM_ALLOWED_CHAT_IDS)."
-        )
+def is_chat_allowed(
+    chat_identifier: Any, entity: Any = None, access: str = CHAT_ACCESS_READ
+) -> bool:
+    """Check whether a chat identifier or entity is permitted by the allowlist.
+
+    ``access`` is "read" (default: listing, reading history, waiting for
+    events), "write" (sending, editing, administering) or "both".
+
+    Integer identifiers are compared as marked IDs (see
+    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID and
+    username only. Its bare ``id`` is never used: the same number is a
+    different chat in the user, basic-group and channel namespaces.
+
+    If no chat allowlist is configured, always returns True.
+    """
+    modes = (CHAT_ACCESS_READ, CHAT_ACCESS_WRITE) if access == CHAT_ACCESS_BOTH else (access,)
+    for mode in modes:
+        allowed = get_chat_allowlist(mode)
+        if allowed is not None and not _matches_chat_allowlist(allowed, chat_identifier, entity):
+            return False
+    return True
+
+
+def chat_access_for_tool(tool_name: str, param_name: Optional[str] = None) -> str:
+    """Access mode a tool needs on the chat named by ``param_name``.
+
+    Tools annotated ``readOnlyHint=True`` (the same flag TELEGRAM_EXPOSED_TOOLS
+    =read-only uses) read; every other registered tool writes, except
+    READ_ACCESS_TOOLS and READ_CHAT_PARAM_NAMES. A function that is not a
+    registered tool must pass both checks.
+    """
+    if param_name in READ_CHAT_PARAM_NAMES or tool_name in READ_ACCESS_TOOLS:
+        return CHAT_ACCESS_READ
+    try:
+        tool = mcp._tool_manager.get_tool(tool_name)
+    except Exception:
+        tool = None
+    if tool is None:
+        return CHAT_ACCESS_BOTH
+    annotations = getattr(tool, "annotations", None)
+    if getattr(annotations, "readOnlyHint", None) is True:
+        return CHAT_ACCESS_READ
+    return CHAT_ACCESS_WRITE
+
+
+def _denied_access_mode(chat_identifier: Any, entity: Any, access: str) -> Optional[str]:
+    modes = (CHAT_ACCESS_READ, CHAT_ACCESS_WRITE) if access == CHAT_ACCESS_BOTH else (access,)
+    for mode in modes:
+        if not is_chat_allowed(chat_identifier, entity, mode):
+            return mode
     return None
+
+
+def check_chat_access(
+    chat_identifier: Any, entity: Any = None, access: str = CHAT_ACCESS_READ
+) -> Optional[str]:
+    """Return an error message if chat access is restricted, or None if allowed."""
+    denied = _denied_access_mode(chat_identifier, entity, access)
+    if denied is None:
+        return None
+    return (
+        f"{denied.capitalize()} access to chat '{chat_identifier}' is restricted by privacy "
+        f"policy (TELEGRAM_ALLOWED_CHAT_IDS / {_CHAT_ACCESS_ENV[denied]})."
+    )
 
 
 # Error code prefix mapping for better error tracing
@@ -1521,24 +1615,25 @@ def validate_id(*param_names_to_validate, raise_errors=False):
 
                 # Per-chat privacy allowlist enforcement
                 if is_chat_allowlist_enabled() and param_name in CHAT_PARAM_NAMES:
+                    access = chat_access_for_tool(func.__name__, param_name)
                     check_target = kwargs[param_name]
                     target_items = (
                         check_target if isinstance(check_target, list) else [check_target]
                     )
                     for item in target_items:
-                        if not is_chat_allowed(item):
+                        if not is_chat_allowed(item, access=access):
                             resolved_allowed = False
                             if isinstance(item, str):
                                 try:
                                     cl = get_client(kwargs.get("account"))
                                     if cl:
                                         ent = await resolve_entity(item, cl)
-                                        if is_chat_allowed(item, ent):
+                                        if is_chat_allowed(item, ent, access):
                                             resolved_allowed = True
                                 except Exception:
                                     pass
                             if not resolved_allowed:
-                                err = check_chat_access(item)
+                                err = check_chat_access(item, access=access)
                                 return error_result(
                                     log_and_format_error(
                                         func.__name__,

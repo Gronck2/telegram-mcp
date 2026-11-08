@@ -971,8 +971,8 @@ async def send_message(
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
 
-        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity):
-            err = check_chat_access(chat_id, entity)
+        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity, CHAT_ACCESS_WRITE):
+            err = check_chat_access(chat_id, entity, CHAT_ACCESS_WRITE)
             return log_and_format_error(
                 "send_message",
                 ChatAccessDeniedError(err),
@@ -2490,8 +2490,8 @@ async def send_typing(
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
 
-        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity):
-            err = check_chat_access(chat_id, entity)
+        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity, CHAT_ACCESS_WRITE):
+            err = check_chat_access(chat_id, entity, CHAT_ACCESS_WRITE)
             return log_and_format_error(
                 "send_typing",
                 ChatAccessDeniedError(err),
@@ -3109,8 +3109,8 @@ async def create_poll(
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
 
-        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity):
-            err = check_chat_access(chat_id, entity)
+        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity, CHAT_ACCESS_WRITE):
+            err = check_chat_access(chat_id, entity, CHAT_ACCESS_WRITE)
             return log_and_format_error(
                 "create_poll",
                 ChatAccessDeniedError(err),
@@ -3186,8 +3186,9 @@ async def vote_poll(
 
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity):
-            raise ChatAccessDeniedError(check_chat_access(chat_id, entity))
+        # Voting reads the poll and writes a vote: both lists must allow the chat.
+        if is_chat_allowlist_enabled() and not is_chat_allowed(chat_id, entity, CHAT_ACCESS_BOTH):
+            raise ChatAccessDeniedError(check_chat_access(chat_id, entity, CHAT_ACCESS_BOTH))
 
         message = await cl.get_messages(entity, ids=message_id)
         if message is None or not isinstance(message.media, types.MessageMediaPoll):

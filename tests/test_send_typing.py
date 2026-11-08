@@ -154,8 +154,12 @@ async def test_failed_cancel_does_not_hide_the_original_error(monkeypatch, sleep
 @pytest.mark.asyncio
 async def test_allowlist_blocks_typing_before_any_request(client, sleeps, monkeypatch):
     monkeypatch.setattr(messages, "is_chat_allowlist_enabled", lambda: True)
-    monkeypatch.setattr(messages, "is_chat_allowed", lambda chat_id, entity=None: False)
-    monkeypatch.setattr(messages, "check_chat_access", lambda chat_id, entity=None: "denied")
+    monkeypatch.setattr(
+        messages, "is_chat_allowed", lambda chat_id, entity=None, access="read": False
+    )
+    monkeypatch.setattr(
+        messages, "check_chat_access", lambda chat_id, entity=None, access="read": "denied"
+    )
 
     result = await messages.send_typing(123456, 0.5)
 
