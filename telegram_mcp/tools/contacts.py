@@ -443,6 +443,18 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
         if not isinstance(user, User):
             return "Error: Resolved entity is not a user."
 
+        # The pre-check above resolved through local aliases; what is acted on is the
+        # real @username, so the decisive check is on this user.
+        if is_chat_allowlist_enabled() and not peer_allowed(user, CHAT_ACCESS_WRITE):
+            err = check_chat_access(username_clean, access=CHAT_ACCESS_WRITE)
+            return log_and_format_error(
+                "add_contact",
+                ChatAccessDeniedError(err),
+                prefix=ErrorCategory.PRIVACY,
+                user_message=err,
+                username=username_clean,
+            )
+
         # Use contacts.addContact to add the contact by user ID
         from telethon.tl.types import InputUser
 

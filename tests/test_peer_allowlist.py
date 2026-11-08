@@ -1582,3 +1582,55 @@ async def test_no_allowlist_alias_flow_makes_no_extra_telegram_calls(actions):
     )
     assert await runtime.deny_peer_param("block_user", "user_id", ["me", "лена"]) is None
     assert actions.requests == []
+
+
+@pytest.mark.asyncio
+async def test_chat_parameter_naming_the_own_account_needs_the_own_id_listed(monkeypatch):
+    own = SimpleNamespace(id=5, is_self=True)
+
+    async def resolve(identifier, c=None):
+        return own
+
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: object())
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+
+    for ref in ("me", "@own_name"):
+        # a chat parameter is Saved Messages, not a subject: refused unless 5 is listed
+        denied = await runtime.deny_peer_param("list_messages", "chat_id", ref)
+        assert denied is not None and "restricted by privacy" in denied, ref
+        res = await messages.list_messages(chat_id=ref)
+        assert "restricted by privacy" in res, ref
+        # as a subject parameter the own account stays allowed
+        assert (
+            await runtime.deny_peer_param("block_user", "user_id", ref, subject=True) is None
+        ), ref
+
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101,5")
+    assert await runtime.deny_peer_param("list_messages", "chat_id", "@own_name") is None
+
+
+@pytest.mark.asyncio
+async def test_add_contact_alias_does_not_launder_a_hidden_username(monkeypatch, actions):
+    boss = types.User(id=303, first_name="Boss", username="boss", access_hash=3)
+
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        if type(request).__name__ == "ResolveUsernameRequest":
+            return SimpleNamespace(users=[boss])
+        return SimpleNamespace(updates=[1])
+
+    async def resolve(identifier, c=None):
+        if identifier == "boss":  # local alias -> the allowed user
+            return IVAN
+        raise ValueError("unknown")
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    for module in (contacts, runtime):
+        monkeypatch.setattr(module, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
+
+    result = await contacts.add_contact(username="boss", first_name="Boss")
+
+    assert "restricted by privacy" in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]

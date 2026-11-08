@@ -1498,7 +1498,9 @@ def _is_self_reference(item: Any) -> bool:
     return isinstance(item, str) and item in _SELF_REFS
 
 
-async def _peer_item_allowed(item: Any, access: str, account: Optional[str]) -> bool:
+async def _peer_item_allowed(
+    item: Any, access: str, account: Optional[str], subject: bool = False
+) -> bool:
     if is_chat_allowed(item, access=access):
         return True
     if not isinstance(item, str):
@@ -1507,7 +1509,9 @@ async def _peer_item_allowed(item: Any, access: str, account: Optional[str]) -> 
         cl = get_client(account)
         if cl:
             entity = await resolve_entity(item, cl)
-            if getattr(entity, "is_self", False) is True:
+            # Only a subject parameter may name the own account; a chat parameter
+            # (Saved Messages) needs the own id on the list, as before ADR 0002.
+            if subject and getattr(entity, "is_self", False) is True:
                 return True
             return is_chat_allowed(item, entity, access)
     except Exception:
@@ -1536,7 +1540,7 @@ async def deny_peer_param(
     for item in value if isinstance(value, list) else [value]:
         if subject and _is_self_reference(item):
             continue
-        if await _peer_item_allowed(item, access, account):
+        if await _peer_item_allowed(item, access, account, subject):
             continue
         err = check_chat_access(alias_wording(item) or item, access=access)
         return log_and_format_error(
