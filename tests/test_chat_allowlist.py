@@ -889,3 +889,21 @@ def test_module_attribute_precedence_with_empty_and_populated_sets(monkeypatch):
     assert is_chat_allowed(7)
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "8")
     assert not is_chat_allowed(7) and is_chat_allowed(8)
+
+
+@pytest.mark.parametrize("raw", ["@", ",", "@,@"])
+def test_module_attribute_loaded_from_typo_env_is_deny_all(monkeypatch, raw):
+    """The import-time load of runtime.ALLOWED_CHAT_IDS also fails closed."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
+    loaded = runtime._load_allowed_chat_ids()
+    assert loaded == set()
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS")
+    monkeypatch.setattr(runtime, "ALLOWED_CHAT_IDS", loaded)
+    assert is_chat_allowlist_enabled()
+    assert not is_chat_allowed(42)
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_module_attribute_loaded_from_blank_env_is_unset(monkeypatch, raw):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
+    assert runtime._load_allowed_chat_ids() is None

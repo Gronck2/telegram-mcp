@@ -118,7 +118,7 @@ async def test_allowed_already_invite_passes_gate(monkeypatch, tool):
     client = _FakeClient(_already(_channel(222)))
     result = await _call(tool, client, monkeypatch)
     assert "restricted" not in result
-    assert client.imports == 0 or "Successfully" in result
+    assert client.checks >= 1
 
 
 @pytest.mark.asyncio
@@ -167,4 +167,36 @@ async def test_lookup_failure_does_not_join(monkeypatch, tool):
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "*")
     client = _FakeClient(RuntimeError("boom"))
     await _call(tool, client, monkeypatch)
+    assert client.imports == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_allowed_peek_invite_passes_gate(monkeypatch, tool):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "-1000000000222")
+    client = _FakeClient(types.ChatInvitePeek(chat=_channel(222), expires=0))
+    result = await _call(tool, client, monkeypatch)
+    assert "restricted" not in result
+    assert client.checks >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_gate_runs_before_any_import_when_lookup_raises(monkeypatch, tool):
+    """CheckChatInvite raising under an allowlist must never lead to an import."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "-1000000000222")
+    client = _FakeClient(RuntimeError("flood"))
+    result = await _call(tool, client, monkeypatch)
+    assert client.imports == 0
+    assert "Successfully joined" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", ["@", ",", "@,@", "@*"])
+@pytest.mark.parametrize("tool", TOOLS)
+async def test_typo_allowlist_refuses_invites(monkeypatch, tool, raw):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
+    client = _FakeClient(_already(_channel(222)))
+    result = await _call(tool, client, monkeypatch)
+    assert "restricted by privacy policy" in result
     assert client.imports == 0
