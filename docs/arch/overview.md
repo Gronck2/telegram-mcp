@@ -31,11 +31,17 @@ Keep this file up to date when a change alters it.
 2. **Chat allowlists** — `TELEGRAM_ALLOWED_CHAT_IDS` (read + write),
    `TELEGRAM_ALLOWED_READ_CHATS`, `TELEGRAM_ALLOWED_WRITE_CHATS` (fork-only,
    #116). Marked IDs only, fail closed once any list is set; a tool's mode
-   comes from `readOnlyHint` (see `chat_access_for_tool`).
+   comes from `readOnlyHint` (see `chat_access_for_tool`), except
+   `READ_ACCESS_TOOLS` (read) and `BOTH_ACCESS_TOOLS` (`press_inline_button`,
+   `vote_poll`: read and write). A non-blank value with no valid entry denies
+   all; `@*` is not the wildcard. While a list is set, invite joins resolve the
+   invite first and need write access to its chat (plain invites are refused).
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.
 4. **HTTP transport security** — Host/Origin validation always on
-   (localhost by default, `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS`).
+   (localhost by default, `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS`); the
+   Origin check wraps both the streamable HTTP and the SSE app (`/media/`,
+   `/upload/` included).
 
 ## Deployment (owner's machine)
 

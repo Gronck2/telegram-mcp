@@ -40,6 +40,7 @@ from telethon.sessions import StringSession
 from telethon.tl.types import (
     User,
     Chat,
+    ChatEmpty,
     ChatForbidden,
     Channel,
     ChannelForbidden,
@@ -109,7 +110,7 @@ def get_marked_id(entity: Any) -> int:
     """Return a Telethon-compatible marked ID for an entity."""
     if isinstance(entity, (Channel, ChannelForbidden)):
         return -1000000000000 - entity.id
-    if isinstance(entity, (Chat, ChatForbidden)):
+    if isinstance(entity, (Chat, ChatForbidden, ChatEmpty)):
         return -entity.id
     return entity.id
 
@@ -1171,12 +1172,48 @@ READ_CHAT_PARAM_NAMES: frozenset[str] = frozenset({"from_chat_id"})
 READ_ACCESS_TOOLS: frozenset[str] = frozenset(
     {"download_media", "export_chat_history", "export_unread_messages"}
 )
+# Tools that both read and change the chat they name (press_inline_button scans
+# recent messages for the keyboard and returns button text and callback answers;
+# vote_poll also checks both modes in its body).
+BOTH_ACCESS_TOOLS: frozenset[str] = frozenset({"press_inline_button", "vote_poll"})
 # Every parameter that names a chat the tool reads or changes, whatever it is called:
 # contact_id is the private chat with that contact, group_id the group being administered.
 # user_id stays out: it names a member acted on inside an already-checked chat.
 CHAT_PARAM_NAMES: frozenset[str] = frozenset(
     {"chat_id", "from_chat_id", "to_chat_id", "channel", "contact_id", "group_id"}
 )
+
+
+def _chat_id_tokens(
+    raw: Optional[Union[str, Iterable[Union[int, str]]]],
+) -> Optional[list[str]]:
+    """Split a raw allowlist value into tokens; None means unset, [] means deny all."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+        # Only separators (","): non-blank, so an empty list (deny all).
+        return [t.strip() for t in raw.split(",") if t.strip()]
+    if isinstance(raw, (list, tuple, set)):
+        return [str(t).strip() for t in raw if str(t).strip()] or None
+    return None
+
+
+def _parse_chat_id_token(token: str) -> Optional[Union[int, str]]:
+    """Parse one allowlist token into an ID, handle, wildcard or inert sentinel."""
+    if token == CHAT_ALLOWLIST_WILDCARD:
+        return CHAT_ALLOWLIST_WILDCARD
+    if _NUMERIC_CHAT_ID_RE.fullmatch(token):
+        return int(token)
+    clean_handle = token.lstrip("@").strip().lower()
+    if clean_handle == CHAT_ALLOWLIST_WILDCARD:
+        # "@*" is not the wildcard: keep a sentinel no identifier can match
+        # (identifiers are stripped of "@" before comparing) so it still
+        # counts as an entry and never widens access.
+        return "@" + CHAT_ALLOWLIST_WILDCARD
+    return clean_handle or None
 
 
 def _parse_allowed_chat_ids(
@@ -1196,36 +1233,22 @@ def _parse_allowed_chat_ids(
     ``-100123456789`` must not also allow user ``123456789``.
 
     A lone ``*`` entry allows every chat (meaningful for the per-mode lists,
-    e.g. TELEGRAM_ALLOWED_READ_CHATS=* with a narrow write list).
+    e.g. TELEGRAM_ALLOWED_READ_CHATS=* with a narrow write list). ``@*`` is not
+    the wildcard. A non-blank value with no valid entry yields an empty set
+    (allowlist enabled, deny all); blank or empty input yields None (unset).
     """
-    if raw is None:
+    tokens = _chat_id_tokens(raw)
+    if tokens is None:
         return None
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return None
-        tokens = [t.strip() for t in raw.split(",") if t.strip()]
-    elif isinstance(raw, (list, tuple, set)):
-        tokens = [str(t).strip() for t in raw if str(t).strip()]
-    else:
-        return None
-
-    if not tokens:
-        return None
-
     allowed: set[Union[int, str]] = set()
     for token in tokens:
-        if token == CHAT_ALLOWLIST_WILDCARD:
-            allowed.add(CHAT_ALLOWLIST_WILDCARD)
-            continue
-        if _NUMERIC_CHAT_ID_RE.fullmatch(token):
-            allowed.add(int(token))
-            continue
-        clean_handle = token.lstrip("@").strip().lower()
-        if clean_handle:
-            allowed.add(clean_handle)
+        entry = _parse_chat_id_token(token)
+        if entry is not None:
+            allowed.add(entry)
 
-    return allowed if allowed else None
+    # Fail closed: a non-empty value with no usable entry ("@", ",") is an
+    # enabled allowlist that matches nothing, not an unset one.
+    return allowed
 
 
 def _load_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
@@ -1334,11 +1357,14 @@ def chat_access_for_tool(tool_name: str, param_name: Optional[str] = None) -> st
 
     Tools annotated ``readOnlyHint=True`` (the same flag TELEGRAM_EXPOSED_TOOLS
     =read-only uses) read; every other registered tool writes, except
-    READ_ACCESS_TOOLS and READ_CHAT_PARAM_NAMES. A function that is not a
+    READ_ACCESS_TOOLS and READ_CHAT_PARAM_NAMES; BOTH_ACCESS_TOOLS need both
+    modes. A function that is not a
     registered tool must pass both checks.
     """
     if param_name in READ_CHAT_PARAM_NAMES or tool_name in READ_ACCESS_TOOLS:
         return CHAT_ACCESS_READ
+    if tool_name in BOTH_ACCESS_TOOLS:
+        return CHAT_ACCESS_BOTH
     try:
         tool = mcp._tool_manager.get_tool(tool_name)
     except Exception:

@@ -368,3 +368,204 @@ async def test_session_handshake_protocol_negotiation():
         sent_session_msg = mock_write.send.call_args[0][0]
         result_dict = sent_session_msg.message.root.result
         assert result_dict["protocolVersion"] == version
+
+
+# ---------------------------------------------------------------------------
+# SSE transport: the same Origin check covers the custom routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [("GET", "/media/x?exp=1&sig=x"), ("PUT", "/upload/x?exp=1&sig=x"), ("POST", "/messages/")],
+)
+def test_sse_app_rejects_cross_origin_requests(method, path):
+    from telegram_mcp.transport.http import create_sse_app
+
+    with TestClient(create_sse_app(mcp), base_url="http://localhost:8765") as client:
+        response = client.request(method, path, headers={"Origin": "https://evil.example"})
+        assert response.status_code == 403
+
+
+@pytest.mark.parametrize("origin", [None, "http://localhost:6274"])
+def test_sse_app_lets_messages_through_without_or_with_good_origin(origin):
+    from telegram_mcp.transport.http import create_sse_app
+
+    headers = {"Origin": origin} if origin else {}
+    with TestClient(create_sse_app(mcp), base_url="http://localhost:8765") as client:
+        response = client.post("/messages/", headers=headers)
+        assert response.status_code == 400  # reached FastMCP: no session_id
+
+
+def test_origin_middleware_passes_through_without_buffering():
+    import asyncio
+
+    from telegram_mcp.transport.http import OriginCheckMiddleware
+
+    sent = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"a", "more_body": True})
+        await send({"type": "http.response.body", "body": b"b"})
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "path": "/sse", "headers": []}
+    asyncio.run(OriginCheckMiddleware(app, mcp)(scope, None, send))
+    assert [m["type"] for m in sent] == [
+        "http.response.start",
+        "http.response.body",
+        "http.response.body",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# SSE transport: /sse stream, Host/Origin combinations (task 0001, item 6)
+# ---------------------------------------------------------------------------
+
+
+def _sse_settings(monkeypatch, hosts, origins):
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    monkeypatch.setattr(
+        mcp.settings,
+        "transport_security",
+        TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=hosts,
+            allowed_origins=origins,
+        ),
+    )
+
+
+async def _open_sse(app, host, origin=None):
+    """GET /sse through the ASGI app; return (status, body of the first chunks)."""
+    import asyncio
+
+    headers = [(b"host", host.encode()), (b"accept", b"text/event-stream")]
+    if origin:
+        headers.append((b"origin", origin.encode()))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/sse",
+        "raw_path": b"/sse",
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 8765),
+    }
+    disconnect = asyncio.Event()
+    got_data = asyncio.Event()
+    status = []
+    body = bytearray()
+
+    async def receive():
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            status.append(message["status"])
+            if message["status"] != 200:
+                got_data.set()
+        elif message["type"] == "http.response.body":
+            body.extend(message.get("body", b""))
+            if b"event: endpoint" in body and b"session_id=" in body:
+                got_data.set()
+            elif status and status[0] != 200:
+                got_data.set()
+
+    task = asyncio.ensure_future(app(scope, receive, send))
+    try:
+        await asyncio.wait_for(got_data.wait(), timeout=5)
+    finally:
+        disconnect.set()
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except (asyncio.TimeoutError, Exception):
+            task.cancel()
+    return status[0], bytes(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "host,origin",
+    [
+        ("localhost:8765", None),
+        ("localhost:8765", "http://localhost:6274"),
+        ("telegram-mcp:8765", None),
+    ],
+)
+async def test_sse_stream_serves_endpoint_event(monkeypatch, host, origin):
+    from telegram_mcp.transport.http import create_sse_app
+
+    _sse_settings(
+        monkeypatch,
+        ["localhost:*", "127.0.0.1:*", "telegram-mcp:*"],
+        ["http://localhost:*"],
+    )
+    status, body = await _open_sse(create_sse_app(mcp), host, origin)
+    assert status == 200
+    assert b"event: endpoint" in body
+    assert b"/messages/?session_id=" in body
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_rejects_disallowed_origin(monkeypatch):
+    from telegram_mcp.transport.http import create_sse_app
+
+    _sse_settings(monkeypatch, ["localhost:*"], ["http://localhost:*"])
+    status, body = await _open_sse(create_sse_app(mcp), "localhost:8765", "https://evil.example")
+    assert status == 403
+    assert b"event: endpoint" not in body
+
+
+def test_sse_messages_with_sibling_container_host(monkeypatch):
+    from telegram_mcp.transport.http import create_sse_app
+
+    _sse_settings(monkeypatch, ["localhost:*", "telegram-mcp:*"], ["http://localhost:*"])
+    with TestClient(create_sse_app(mcp), base_url="http://telegram-mcp:8765") as client:
+        # reaches FastMCP (400: no session_id), not rejected by Host validation (421)
+        assert client.post("/messages/", json={}).status_code == 400
+        # a Host that is not allowed is still refused by FastMCP's own validation
+    with TestClient(create_sse_app(mcp), base_url="http://other-host:8765") as client:
+        assert client.post("/messages/", json={}).status_code == 421
+
+
+def test_sse_app_rejects_cross_origin_on_all_routes(monkeypatch):
+    from telegram_mcp.transport.http import create_sse_app
+
+    _sse_settings(monkeypatch, ["localhost:*"], ["http://localhost:*"])
+    bad = {"Origin": "https://evil.example"}
+    with TestClient(create_sse_app(mcp), base_url="http://localhost:8765") as client:
+        for method, path in [
+            ("GET", "/media/x"),
+            ("PUT", "/upload/x"),
+            ("POST", "/messages/"),
+            ("GET", "/sse"),
+        ]:
+            assert client.request(method, path, headers=bad).status_code == 403, path
+
+
+def test_runner_serve_sse_uses_origin_checked_runner(monkeypatch):
+    import asyncio
+
+    from telegram_mcp import runner
+    from telegram_mcp.transport import http as http_mod
+
+    called = []
+
+    async def fake_run_sse(instance):
+        called.append(instance)
+
+    monkeypatch.setattr(http_mod, "run_sse_async", fake_run_sse)
+    monkeypatch.setattr(runner, "_configure_transport_security", lambda: None)
+    asyncio.run(runner._serve("sse"))
+    assert called == [runner.mcp]

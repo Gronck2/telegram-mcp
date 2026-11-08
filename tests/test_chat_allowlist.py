@@ -88,7 +88,7 @@ def test_parse_allowed_chat_ids_none_and_empty():
     assert _parse_allowed_chat_ids(None) is None
     assert _parse_allowed_chat_ids("") is None
     assert _parse_allowed_chat_ids("   ") is None
-    assert _parse_allowed_chat_ids(" , ,  ") is None
+    assert _parse_allowed_chat_ids(" , ,  ") == set()  # non-blank, no entry: deny all
 
 
 def test_parse_allowed_chat_ids_keeps_marked_ids_exact():
@@ -815,3 +815,145 @@ async def test_get_folder_hides_unallowed_chats(monkeypatch):
     assert [c["id"] for c in res["included_chats"]] == [101]
     assert res["pinned_chats"] == []
     assert res["excluded_chats"] == []
+
+
+# ---------------------------------------------------------------------------
+# Security review fixes (task 0001)
+# ---------------------------------------------------------------------------
+
+
+def test_chat_empty_maps_to_negative_id():
+    entity = types.ChatEmpty(id=5)
+    assert get_marked_id(entity) == -5
+    assert runtime._matches_chat_allowlist({-5}, None, entity)
+    assert not runtime._matches_chat_allowlist({5}, None, entity)
+
+
+def test_at_star_is_not_the_wildcard():
+    parsed = _parse_allowed_chat_ids("@*")
+    assert runtime.CHAT_ALLOWLIST_WILDCARD not in parsed
+    assert parsed  # still an entry: the allowlist is enabled
+    assert not runtime._matches_chat_allowlist(parsed, "anything", None)
+    assert not runtime._matches_chat_allowlist(parsed, "@*", None)
+    assert not runtime._matches_chat_allowlist(parsed, "*", None)
+
+
+def test_bare_star_is_still_the_wildcard():
+    assert _parse_allowed_chat_ids("*") == {"*"}
+    assert runtime._matches_chat_allowlist({"*"}, 42, None)
+
+
+@pytest.mark.parametrize("raw", ["@", ",", "@,@", " , ", "@ "])
+def test_unparseable_non_blank_value_denies_all(raw):
+    assert _parse_allowed_chat_ids(raw) == set()
+
+
+@pytest.mark.parametrize("raw", ["", "  ", None, [], ()])
+def test_blank_value_stays_unset(raw):
+    assert _parse_allowed_chat_ids(raw) is None
+
+
+def test_iterable_without_valid_entries_denies_all():
+    assert _parse_allowed_chat_ids(["@", " "]) == set()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TELEGRAM_ALLOWED_CHAT_IDS",
+        "TELEGRAM_ALLOWED_READ_CHATS",
+        "TELEGRAM_ALLOWED_WRITE_CHATS",
+    ],
+)
+@pytest.mark.parametrize("raw", ["@", ",", "@,@"])
+def test_typo_in_any_variable_fails_closed(monkeypatch, name, raw):
+    monkeypatch.setenv(name, raw)
+    assert is_chat_allowlist_enabled()
+    assert not is_chat_allowed(42, access="both")
+    assert not is_chat_allowed("somebody", access="both")
+
+
+@pytest.mark.parametrize("name", ["TELEGRAM_ALLOWED_READ_CHATS", "TELEGRAM_ALLOWED_WRITE_CHATS"])
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_blank_variable_stays_unset(monkeypatch, name, raw):
+    monkeypatch.setenv(name, raw)
+    assert not is_chat_allowlist_enabled()
+
+
+def test_module_attribute_precedence_with_empty_and_populated_sets(monkeypatch):
+    monkeypatch.setattr(runtime, "ALLOWED_CHAT_IDS", set())
+    assert get_effective_allowed_chat_ids() == set()
+    assert is_chat_allowlist_enabled()
+    assert not is_chat_allowed(7)
+    monkeypatch.setattr(runtime, "ALLOWED_CHAT_IDS", {7})
+    assert is_chat_allowed(7)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "8")
+    assert not is_chat_allowed(7) and is_chat_allowed(8)
+
+
+@pytest.mark.parametrize("raw", ["@", ",", "@,@"])
+def test_module_attribute_loaded_from_typo_env_is_deny_all(monkeypatch, raw):
+    """The import-time load of runtime.ALLOWED_CHAT_IDS also fails closed."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
+    loaded = runtime._load_allowed_chat_ids()
+    assert loaded == set()
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS")
+    monkeypatch.setattr(runtime, "ALLOWED_CHAT_IDS", loaded)
+    assert is_chat_allowlist_enabled()
+    assert not is_chat_allowed(42)
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_module_attribute_loaded_from_blank_env_is_unset(monkeypatch, raw):
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw)
+    assert runtime._load_allowed_chat_ids() is None
+
+
+# ---------------------------------------------------------------------------
+# Parser refactor (_chat_id_tokens / _parse_chat_id_token): behaviour unchanged
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("container", [list, tuple, set])
+def test_iterable_mixed_ints_and_strings(container):
+    parsed = _parse_allowed_chat_ids(container([123, "@Team", " ", "-100456"]))
+    assert parsed == {123, "team", -100456}
+
+
+@pytest.mark.parametrize("container", [list, tuple, set])
+def test_iterable_of_blanks_is_unset(container):
+    assert _parse_allowed_chat_ids(container(["", "  "])) is None
+
+
+def test_iterable_star_and_at_star():
+    assert _parse_allowed_chat_ids(["*"]) == {"*"}
+    parsed = _parse_allowed_chat_ids(["@*"])
+    assert parsed == {"@*"}
+    assert "*" not in parsed
+
+
+def test_mixed_valid_and_invalid_keeps_only_valid():
+    assert _parse_allowed_chat_ids("@, @Alice, ,-100123, 77") == {"alice", -100123, 77}
+
+
+def test_at_star_alongside_valid_entry_does_not_widen():
+    parsed = _parse_allowed_chat_ids("@*, bob")
+    assert parsed == {"@*", "bob"}
+    assert not runtime._matches_chat_allowlist(parsed, "other", None)
+
+
+def test_uppercase_handles_lowercased_and_at_stripped():
+    assert _parse_allowed_chat_ids("@MyChan, PUBLIC") == {"mychan", "public"}
+
+
+def test_multiple_leading_ats_stripped():
+    assert _parse_allowed_chat_ids("@@Foo") == {"foo"}
+
+
+def test_unsupported_type_is_unset():
+    assert _parse_allowed_chat_ids(12345) is None  # type: ignore[arg-type]
+    assert _parse_allowed_chat_ids({"a": 1}) is None  # type: ignore[arg-type]
+
+
+def test_phone_with_valid_entry():
+    assert _parse_allowed_chat_ids("+7999123, 5") == {"+7999123", 5}
