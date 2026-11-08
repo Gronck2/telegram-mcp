@@ -338,6 +338,12 @@ _resolve_phone_call_locks: "weakref.WeakKeyDictionary[TelegramClient, asyncio.Lo
 )
 
 
+NO_PHONE_USER_MESSAGE: Final[str] = (
+    "No Telegram user found for this number, or the owner's privacy settings "
+    "hide it from phone lookups."
+)
+
+
 def normalize_phone(phone: str) -> Optional[str]:
     """Return an E.164 number as bare digits, or None when it is not one."""
     if not isinstance(phone, str):
@@ -387,12 +393,17 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
                 result = await cl(functions.contacts.ResolvePhoneRequest(phone=digits))
             finally:
                 cl.flood_sleep_threshold = previous_threshold
+        if is_chat_allowlist_enabled():
+            # The lookup quota is spent either way; outside read access only the
+            # public view of the user is returned.
+            users = getattr(result, "users", None)
+            if not users:
+                return NO_PHONE_USER_MESSAGE
+            shown = view_for(users[0], lambda: str(result))
+            return shown if isinstance(shown, str) else json.dumps(shown, ensure_ascii=False)
         return str(result)
     except PhoneNotOccupiedError:
-        return (
-            "No Telegram user found for this number, or the owner's privacy settings "
-            "hide it from phone lookups."
-        )
+        return NO_PHONE_USER_MESSAGE
     except PhoneNumberInvalidError:
         return (
             "Error: Telegram rejected this phone number as invalid. "

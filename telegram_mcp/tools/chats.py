@@ -955,6 +955,34 @@ def normalize_username(username: str) -> str:
     return clean.strip()
 
 
+def _resolved_peer_details(users, chats, peer_id) -> Dict[str, Any]:
+    """Fields describing the first resolved user or chat; public fields only outside read."""
+    target = (users or chats or [None])[0]
+    if target is None:
+        return {}
+    if not peer_allowed(target):
+        # No phone, member counts or other detail for a peer outside read access.
+        return public_view(target)
+    if users:
+        u = users[0]
+        return {
+            "id": getattr(u, "id", peer_id),
+            "first_name": sanitize_user_content(getattr(u, "first_name", None) or ""),
+            "last_name": sanitize_user_content(getattr(u, "last_name", None) or ""),
+            "phone": getattr(u, "phone", None),
+            "is_bot": bool(getattr(u, "bot", False)),
+            "verified": bool(getattr(u, "verified", False)),
+        }
+    c = chats[0]
+    return {
+        "id": get_marked_id(c),
+        "title": sanitize_user_content(getattr(c, "title", None) or ""),
+        "participants_count": getattr(c, "participants_count", None),
+        "broadcast": bool(getattr(c, "broadcast", False)),
+        "megagroup": bool(getattr(c, "megagroup", False)),
+    }
+
+
 @mcp.tool(
     annotations=ToolAnnotations(title="Resolve Username", openWorldHint=True, readOnlyHint=True)
 )
@@ -998,29 +1026,7 @@ async def resolve_username(username: str, account: Optional[str] = None) -> str:
 
         users = getattr(result, "users", [])
         chats = getattr(result, "chats", [])
-        if users:
-            u = users[0]
-            entity_info.update(
-                {
-                    "id": getattr(u, "id", peer_id),
-                    "first_name": sanitize_user_content(getattr(u, "first_name", None) or ""),
-                    "last_name": sanitize_user_content(getattr(u, "last_name", None) or ""),
-                    "phone": getattr(u, "phone", None),
-                    "is_bot": bool(getattr(u, "bot", False)),
-                    "verified": bool(getattr(u, "verified", False)),
-                }
-            )
-        elif chats:
-            c = chats[0]
-            entity_info.update(
-                {
-                    "id": get_marked_id(c),
-                    "title": sanitize_user_content(getattr(c, "title", None) or ""),
-                    "participants_count": getattr(c, "participants_count", None),
-                    "broadcast": bool(getattr(c, "broadcast", False)),
-                    "megagroup": bool(getattr(c, "megagroup", False)),
-                }
-            )
+        entity_info.update(_resolved_peer_details(users, chats, peer_id))
 
         return json.dumps(entity_info, indent=2, ensure_ascii=False)
     except Exception as e:

@@ -102,6 +102,35 @@ async def delete_profile_photo(account: Optional[str] = None) -> str:
         return log_and_format_error("delete_profile_photo", e)
 
 
+def _privacy_settings_text(settings) -> str:
+    """str(settings), or with a chat allowlist a version that hides unallowed peers.
+
+    Users named in the rules outside read access appear as the public view only;
+    rule chats outside read access are left out, without a count.
+    """
+    if not is_chat_allowlist_enabled():
+        return str(settings)
+    users = {user.id: user for user in getattr(settings, "users", None) or []}
+    rules = []
+    for rule in getattr(settings, "rules", None) or []:
+        entry: Dict[str, Any] = {"rule": type(rule).__name__}
+        user_ids = getattr(rule, "users", None)
+        if user_ids is not None:
+            entry["users"] = [
+                (
+                    view_for(users[uid], lambda user=users[uid]: format_entity(user))
+                    if uid in users
+                    else {"id": uid}
+                )
+                for uid in user_ids
+            ]
+        chat_ids = getattr(rule, "chats", None)
+        if chat_ids is not None:
+            entry["chats"] = [cid for cid in chat_ids if is_chat_allowed(-cid)]
+        rules.append(entry)
+    return json.dumps({"rules": rules}, indent=2, ensure_ascii=False)
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Get Privacy Settings", openWorldHint=True, readOnlyHint=True
@@ -122,7 +151,7 @@ async def get_privacy_settings(account: Optional[str] = None) -> str:
             settings = await cl(
                 functions.account.GetPrivacyRequest(key=InputPrivacyKeyStatusTimestamp())
             )
-            return str(settings)
+            return _privacy_settings_text(settings)
         except TypeError as e:
             if "TLObject was expected" in str(e):
                 return (
@@ -344,6 +373,8 @@ async def get_full_user(username: Union[int, str], account: Optional[str] = None
         cl = get_client(account)
         await ensure_connected(cl)
         entity = await resolve_entity(username, cl)
+        if not peer_allowed(entity):
+            return json.dumps(public_view(entity), ensure_ascii=False)
         full = await cl(functions.users.GetFullUserRequest(id=entity))
 
         user = full.users[0] if full.users else None
@@ -423,6 +454,9 @@ async def get_bot_info(bot_username: str, account: Optional[str] = None) -> str:
         entity = await resolve_entity(bot_username, cl)
         if not entity:
             return f"Bot with username {bot_username} not found."
+        if not peer_allowed(entity):
+            # Description and commands count as bio-like: public fields only.
+            return json.dumps({"bot_info": public_view(entity)}, indent=2, ensure_ascii=False)
 
         result = await cl(functions.users.GetFullUserRequest(id=entity))
 
@@ -508,7 +542,7 @@ async def set_bot_commands(
     annotations=ToolAnnotations(title="Get User Photos", openWorldHint=True, readOnlyHint=True)
 )
 @with_account(readonly=True)
-@validate_id("user_id")
+@validate_id("user_id", peer_subject=True)
 async def get_user_photos(
     user_id: Union[int, str], limit: int = 10, account: Optional[str] = None
 ) -> str:
@@ -530,7 +564,7 @@ async def get_user_photos(
     annotations=ToolAnnotations(title="Get User Status", openWorldHint=True, readOnlyHint=True)
 )
 @with_account(readonly=True)
-@validate_id("user_id")
+@validate_id("user_id", peer_subject=True)
 async def get_user_status(user_id: Union[int, str], account: Optional[str] = None) -> str:
     """
     Get the online status of a user.

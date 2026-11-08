@@ -1,13 +1,15 @@
 """Chat allowlists cover tools that list or name a peer outside validate_id (task 0002)."""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from telethon import functions, types
 
 import main
 from telegram_mcp import runtime
-from telegram_mcp.tools import contacts
+from telegram_mcp.tools import chats, contacts, profile
 
 ENV_VARS = (
     "TELEGRAM_ALLOWED_CHAT_IDS",
@@ -297,3 +299,280 @@ async def test_list_contact_aliases_unchanged_without_allowlist():
     data = json.loads(await contacts.list_contact_aliases())
 
     assert data["results"][0]["id"] == 303
+
+
+# ---------------------------------------------------------------------------
+# Group B: lookups on one named peer return the public view outside read access
+# ---------------------------------------------------------------------------
+
+RICH = types.User(
+    id=101,
+    first_name="Ivan",
+    last_name="Petrov",
+    username="ivan_k",
+    phone="79990001122",
+    verified=True,
+    contact=True,
+    mutual_contact=True,
+    access_hash=1,
+    status=types.UserStatusOnline(expires=None),
+    photo=types.UserProfilePhoto(photo_id=555, dc_id=1),
+)
+HIDDEN_VALUES = ("79990001122", "SECRET-BIO", "555", "UserStatus", "1990", "personal_chan")
+
+
+def assert_public_only(text):
+    for value in HIDDEN_VALUES:
+        assert value not in text, value
+    for field in (
+        "phone",
+        "bio",
+        "about",
+        "birthday",
+        "personal_channel",
+        "common_chats_count",
+        "contact",
+        "mutual_contact",
+        "status",
+        "photo",
+    ):
+        assert f'"{field}"' not in text, field
+
+
+def full_user_response():
+    full = SimpleNamespace(
+        about="SECRET-BIO",
+        personal_channel_id=None,
+        birthday=SimpleNamespace(day=1, month=2, year=1990),
+        common_chats_count=7,
+        private_forward_name=None,
+        pinned_msg_id=None,
+        stargifts_count=None,
+    )
+    return SimpleNamespace(users=[RICH], full_user=full)
+
+
+@pytest.fixture
+def profile_client(monkeypatch):
+    cl = AsyncMock(return_value=full_user_response())
+
+    async def resolve(identifier, c=None):
+        return RICH
+
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(runtime, "resolve_entity", resolve)
+    return cl
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_outside_read_is_public_view(monkeypatch, profile_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    text = await profile.get_full_user("ivan_k")
+
+    assert_public_only(text)
+    assert json.loads(text) == {
+        "id": 101,
+        "type": "user",
+        "bot": False,
+        "first_name": "Ivan",
+        "last_name": "Petrov",
+        "username": "ivan_k",
+        "badges": ["verified"],
+    }
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env",
+    [{}, {"TELEGRAM_ALLOWED_CHAT_IDS": "101"}, {"TELEGRAM_ALLOWED_READ_CHATS": "*"}],
+)
+async def test_get_full_user_inside_read_or_no_allowlist_is_full(monkeypatch, profile_client, env):
+    allow(monkeypatch, **env)
+
+    data = json.loads(await profile.get_full_user("ivan_k"))
+
+    assert data["bio"] == "SECRET-BIO"
+    assert data["phone"] == "79990001122"
+    assert data["common_chats_count"] == 7
+
+
+@pytest.mark.asyncio
+async def test_get_bot_info_outside_read_omits_description(monkeypatch, profile_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    text = await profile.get_bot_info("ivan_k")
+
+    assert_public_only(text)
+    assert json.loads(text) == {"bot_info": runtime.public_view(RICH)}
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_bot_info_inside_read_is_unchanged(monkeypatch, profile_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    data = json.loads(await profile.get_bot_info("ivan_k"))
+
+    assert data["bot_info"]["about"] == "SECRET-BIO"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_user_photos", "get_user_status"])
+async def test_photos_and_status_refused_outside_read(monkeypatch, profile_client, name):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    for user_id in (101, "ivan_k"):
+        result = await getattr(profile, name)(user_id=user_id)
+        assert "restricted by privacy policy" in result
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_photos_and_status_work_inside_read(monkeypatch, profile_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+    profile_client.return_value = SimpleNamespace(photos=[SimpleNamespace(id=555)])
+
+    assert json.loads(await profile.get_user_photos(user_id=101)) == [555]
+    assert "UserStatusOnline" in await profile.get_user_status(user_id=101)
+
+
+@pytest.mark.asyncio
+async def test_username_input_is_checked_after_resolving(monkeypatch, profile_client):
+    """A handle allowlisted by username is allowed once it resolves to that user."""
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@ivan_k")
+    profile_client.return_value = SimpleNamespace(photos=[SimpleNamespace(id=555)])
+
+    assert json.loads(await profile.get_user_photos(user_id="@ivan_k")) == [555]
+    # a bare numeric id is compared as a marked id only, so it fails closed
+    assert "restricted by privacy policy" in await profile.get_user_status(user_id=101)
+
+
+def resolved_username_response(user):
+    return SimpleNamespace(peer=types.PeerUser(user_id=user.id), users=[user], chats=[])
+
+
+@pytest.fixture
+def username_client(monkeypatch):
+    cl = AsyncMock(return_value=resolved_username_response(RICH))
+    monkeypatch.setattr(chats, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(chats, "ensure_connected", AsyncMock())
+    return cl
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_outside_read_is_public_view(monkeypatch, username_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="101")
+
+    text = await chats.resolve_username("@ivan_k")
+    data = json.loads(text)
+
+    assert_public_only(text)
+    assert data["id"] == 101 and data["first_name"] == "Ivan" and data["badges"] == ["verified"]
+    assert data["peer_id"] == 101
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_channel_outside_read_hides_counts(monkeypatch, username_client):
+    channel = types.Channel(
+        id=9,
+        title="News",
+        photo=None,
+        date=None,
+        broadcast=True,
+        username="news",
+        participants_count=12345,
+    )
+    username_client.return_value = SimpleNamespace(
+        peer=types.PeerChannel(channel_id=9), users=[], chats=[channel]
+    )
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="5")
+
+    data = json.loads(await chats.resolve_username("news"))
+
+    assert data["type"] == "channel" and data["title"] == "News"
+    assert "participants_count" not in data and "broadcast" not in data
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_inside_read_is_full(monkeypatch, username_client):
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+
+    data = json.loads(await chats.resolve_username("@ivan_k"))
+
+    assert data["phone"] == "79990001122"
+
+
+@pytest.mark.asyncio
+async def test_resolve_phone_outside_read_is_public_view(monkeypatch):
+    result = types.contacts.ResolvedPeer(peer=types.PeerUser(user_id=101), chats=[], users=[RICH])
+    cl = AsyncMock(return_value=result)
+    monkeypatch.setattr(contacts, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(contacts, "ensure_connected", AsyncMock())
+    monkeypatch.setattr(contacts, "_resolve_phone_limiter", contacts.ResolvePhoneLimiter())
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    text = await contacts.resolve_phone("+7 999 000 1122")
+
+    assert_public_only(text)
+    assert json.loads(text)["id"] == 101
+    cl.assert_awaited_once()
+
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101")
+    assert "79990001122" in await contacts.resolve_phone("+7 999 000 1122")
+
+
+@pytest.mark.asyncio
+async def test_resolve_phone_without_user_under_allowlist_does_not_dump_result(monkeypatch):
+    result = types.contacts.ResolvedPeer(peer=types.PeerUser(user_id=101), chats=[], users=[])
+    cl = AsyncMock(return_value=result)
+    monkeypatch.setattr(contacts, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(contacts, "ensure_connected", AsyncMock())
+    monkeypatch.setattr(contacts, "_resolve_phone_limiter", contacts.ResolvePhoneLimiter())
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="5")
+
+    assert await contacts.resolve_phone("+7 999 000 1122") == contacts.NO_PHONE_USER_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_get_privacy_settings_shows_public_view_for_outside_users(monkeypatch):
+    other = types.User(id=303, first_name="Zed", phone="333", access_hash=3)
+    settings = types.account.PrivacyRules(
+        rules=[
+            types.PrivacyValueAllowUsers(users=[101, 303]),
+            types.PrivacyValueDisallowChatParticipants(chats=[5, 6]),
+            types.PrivacyValueAllowContacts(),
+        ],
+        chats=[],
+        users=[RICH, other],
+    )
+    cl = AsyncMock(return_value=settings)
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="101,-5")
+
+    text = await profile.get_privacy_settings()
+    data = json.loads(text)
+
+    allow_users = data["rules"][0]["users"]
+    assert allow_users[0]["phone"] == "79990001122"  # inside read: full
+    assert allow_users[1] == runtime.public_view(other)  # outside read: public view
+    assert "333" not in text
+    assert data["rules"][1]["chats"] == [5]
+    assert data["rules"][2] == {"rule": "PrivacyValueAllowContacts"}
+
+
+@pytest.mark.asyncio
+async def test_get_privacy_settings_unchanged_without_allowlist(monkeypatch):
+    settings = types.account.PrivacyRules(
+        rules=[types.PrivacyValueAllowUsers(users=[101])], chats=[], users=[RICH]
+    )
+    cl = AsyncMock(return_value=settings)
+    monkeypatch.setattr(profile, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(profile, "ensure_connected", AsyncMock())
+
+    assert await profile.get_privacy_settings() == str(settings)
