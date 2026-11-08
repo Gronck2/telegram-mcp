@@ -2217,3 +2217,152 @@ async def test_get_full_user_entity_not_holding_username_is_public_view(
 
     assert "bio" not in data
     assert "SECRET-BIO" not in json.dumps(data)
+
+
+# ---------------------------------------------------------------------------
+# Task 0003 test pass after review round 2: holds-the-username guard end to end
+# ---------------------------------------------------------------------------
+
+STRANGER = types.User(
+    id=501,
+    first_name="Stranger",
+    username="someone_else",
+    usernames=[types.Username(username="other_alias", editable=False, active=True)],
+    access_hash=51,
+    phone="79990009900",
+)
+
+
+@pytest.mark.asyncio
+async def test_get_bot_info_entity_not_holding_identifier_is_public_view(
+    monkeypatch, profile_client
+):
+    async def resolve(identifier, c=None):
+        return STRANGER
+
+    monkeypatch.setattr(profile, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+    profile_client.return_value = SimpleNamespace(
+        users=[STRANGER], full_user=full_user_response().full_user
+    )
+
+    text = await profile.get_bot_info("foo_user")
+
+    assert "SECRET-BIO" not in text
+    assert json.loads(text) == {"bot_info": runtime.public_view(STRANGER)}
+    profile_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_entity_not_holding_identifier_is_public_view(
+    monkeypatch, username_client
+):
+    username_client.return_value = resolved_username_response(STRANGER)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    text = await chats.resolve_username("foo_user")
+
+    assert "79990009900" not in text
+    assert json.loads(text)["id"] == 501
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given", ["@foo_user", "t.me/foo_user", "https://t.me/foo_user/"])
+async def test_resolve_username_cleaned_forms_of_a_held_username_are_full(
+    monkeypatch, username_client, given
+):
+    username_client.return_value = resolved_username_response(SECONDARY)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    data = json.loads(await chats.resolve_username(given))
+
+    assert data["phone"] == "79995554433"
+
+
+@pytest.mark.asyncio
+async def test_resolve_username_cleaned_form_of_a_foreign_username_is_public(
+    monkeypatch, username_client
+):
+    username_client.return_value = resolved_username_response(STRANGER)
+    allow(monkeypatch, TELEGRAM_ALLOWED_READ_CHATS="@foo_user")
+
+    text = await chats.resolve_username("https://t.me/foo_user?start=1")
+
+    assert "79990009900" not in text
+
+
+@pytest.mark.asyncio
+async def test_add_contact_by_username_the_user_does_not_hold_is_refused(monkeypatch, actions):
+    async def call(self, request, *args, **kwargs):
+        actions.requests.append(request)
+        return SimpleNamespace(peer=types.PeerUser(user_id=STRANGER.id), users=[STRANGER])
+
+    async def resolve(identifier, c=None):
+        return STRANGER
+
+    monkeypatch.setattr(actions.__class__, "__call__", call)
+    for module in (contacts, runtime):
+        monkeypatch.setattr(module, "resolve_entity", resolve)
+    allow(monkeypatch, TELEGRAM_ALLOWED_WRITE_CHATS="@foo_user")
+
+    result = await contacts.add_contact(username="@foo_user", first_name="X")
+
+    assert "Write access to chat" in result
+    assert "restricted by privacy policy" in result
+    assert "AddContactRequest" not in [type(r).__name__ for r in actions.requests]
+
+
+def test_entity_holds_username_forms_and_missing_data():
+    assert runtime._entity_holds_username(SECONDARY, "foo_user") is True
+    assert runtime._entity_holds_username(SECONDARY, "@FOO_User") is True
+    assert runtime._entity_holds_username(SECONDARY, " @foo_user ") is True
+    assert runtime._entity_holds_username(SECONDARY, "foo_use") is False
+    assert runtime._entity_holds_username(STRANGER, "other_alias") is True
+    assert runtime._entity_holds_username(STRANGER, "someone_else") is True
+    bare = SimpleNamespace(id=1)
+    assert runtime._entity_holds_username(bare, "foo_user") is False
+    not_a_list = SimpleNamespace(username=None, usernames="foo_user")
+    assert runtime._entity_holds_username(not_a_list, "foo_user") is False
+
+
+def test_entity_holds_username_ignores_entries_without_a_name():
+    entity = SimpleNamespace(
+        username=None,
+        usernames=[
+            SimpleNamespace(username=None, active=True),
+            SimpleNamespace(active=True),
+            SimpleNamespace(username=123, active=True),
+            SimpleNamespace(username="real_one", active=False),
+        ],
+    )
+
+    assert runtime._entity_holds_username(entity, "real_one") is True
+    assert runtime._entity_holds_username(entity, "None") is False
+
+
+def test_peer_allowed_username_none_entries_do_not_grant(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    entity = SimpleNamespace(
+        id=502,
+        username=None,
+        usernames=[SimpleNamespace(username=None, active=True)],
+        first_name="foo_user",
+    )
+
+    assert runtime.peer_allowed(entity, runtime.CHAT_ACCESS_READ, "foo_user") is False
+
+
+def test_peer_allowed_without_allowlist_never_calls_the_new_helpers(monkeypatch):
+    monkeypatch.setattr(runtime, "_is_username_identifier", lambda *a: pytest.fail("called"))
+    monkeypatch.setattr(runtime, "_entity_holds_username", lambda *a: pytest.fail("called"))
+
+    assert runtime.peer_allowed(STRANGER, runtime.CHAT_ACCESS_READ, "foo_user") is True
+    assert runtime.peer_allowed(STRANGER) is True
+
+
+def test_peer_allowed_held_check_runs_before_allowlist_match(monkeypatch):
+    allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="@foo_user")
+    monkeypatch.setattr(runtime, "is_chat_allowed", lambda cid, *a, **k: cid == "foo_user")
+
+    assert runtime.peer_allowed(STRANGER, runtime.CHAT_ACCESS_READ, "foo_user") is False
+    assert runtime.peer_allowed(SECONDARY, runtime.CHAT_ACCESS_READ, "foo_user") is True
