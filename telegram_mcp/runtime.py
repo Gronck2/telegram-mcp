@@ -1247,12 +1247,18 @@ def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional
         return _INERT_CHAT_ENTRY
     name, is_invite = utils.parse_username(clean_handle)
     if name and not is_invite:
+        if name.lower() in _SELF_REFS:
+            # Telethon resolves "self" to the own account, not to a user named self;
+            # a string grant would reach Saved Messages without the own id listed.
+            _warn_ignored_entry(token, source)
+            return _INERT_CHAT_ENTRY
         return name.lower()
     phone = utils.parse_phone(token)
     if phone:
-        # Telethon answers a phone from the phone column, never from chat titles.
         # Canonical "+digits": no username starts with "+", so it cannot be reached by
-        # a handle-shaped string; callers are compared via parse_phone only.
+        # a handle-shaped string; callers are compared via parse_phone only. Under an
+        # allowlist the resolvers answer a phone only from contacts or the phone
+        # column (_phone_lookup): Telethon's own fallback would try display names.
         return "+" + phone
     _warn_ignored_entry(token, source)
     return _INERT_CHAT_ENTRY
@@ -1374,6 +1380,7 @@ def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier
     return (
         bool(clean)
         and not clean.startswith("+")
+        and clean not in _SELF_REFS
         and clean in allowed
         and is_unshadowable_identifier(ident)
     )
@@ -2652,8 +2659,9 @@ def _is_malformed_handle(identifier: Any) -> bool:
     yet the allowlist would accept them by string (``@`` and spaces are stripped) while
     only the display-name column could answer. Self references, real phones (a string
     ``utils.parse_phone`` accepts as is), ids and invite links are not usernames either,
-    but Telethon answers them without the name column, so they are exempt. A value that
-    is a phone only once ``@`` is stripped (``@555-123-4567``) is refused. Plain free
+    but the name column must not answer them either (phones are pinned to contacts and
+    the phone column by ``_phone_lookup``; the rest never reach it), so they are exempt.
+    A value that is a phone only once ``@`` is stripped (``@555-123-4567``) is refused. Plain free
     text (``My Group``) cannot match an allowlist entry by string: ``_parse_chat_id_token``
     keeps only ids, ``*``, valid usernames and phones (compared via ``parse_phone`` only,
     never by the stripped string), and turns every other entry into an inert one. It is
@@ -2703,6 +2711,43 @@ def _username_cached(client, identifier: str) -> bool:
         return False
 
 
+async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
+    """Resolve a phone string without ever reaching the display-name column.
+
+    Telethon's ``get_entity`` tries the contacts list, then falls back to
+    ``session.get_input_entity``, which on a phone-row miss matches the exact
+    display name / title of a cached chat (a chat called ``+15551234567``). Under
+    an allowlist only a phone-row hit or a contacts entry with this phone answers;
+    anything else is refused.
+    """
+    phone = utils.parse_phone(identifier)
+    if _phone_cached(client, identifier):
+        peer = await client.get_input_entity(identifier)
+        return await client.get_entity(peer) if as_entity else peer
+    try:
+        found = await client(functions.contacts.GetContactsRequest(0))
+    except BotMethodInvalidError as error:
+        raise ValueError("Cannot get entity by phone number as a bot") from error
+    for user in getattr(found, "users", None) or []:
+        if getattr(user, "phone", None) == phone:
+            return user if as_entity else utils.get_input_peer(user)
+    raise ValueError(
+        f"{identifier!r} is not in the contacts or the phone cache; chat access is "
+        "restricted by an allowlist, so a phone cannot be matched by display name."
+    )
+
+
+def _guarded_entity_getter(client):
+    """get_entity that answers phone strings only through ``_phone_lookup``."""
+
+    async def get(identifier):
+        if isinstance(identifier, str) and utils.parse_phone(identifier):
+            return await _phone_lookup(client, identifier, True)
+        return await client.get_entity(identifier)
+
+    return get
+
+
 def _guarded_input_getter(client):
     """get_input_entity that always names the same peer as ``get_entity`` would.
 
@@ -2721,8 +2766,8 @@ def _guarded_input_getter(client):
             return types.InputPeerSelf()
         if isinstance(identifier, str):
             if utils.parse_phone(identifier):
-                cached = _phone_cached(client, identifier)
-            elif _parses_as_username(identifier):
+                return await _phone_lookup(client, identifier, False)
+            if _parses_as_username(identifier):
                 cached = _username_cached(client, identifier)
             else:
                 cached = False
@@ -2735,8 +2780,11 @@ def _guarded_input_getter(client):
 
 def _lookup_callable(client, getter: str):
     """The client's lookup method; under an allowlist the username-safe input lookup."""
-    if getter == "get_input_entity" and is_chat_allowlist_enabled():
-        return _guarded_input_getter(client)
+    if is_chat_allowlist_enabled():
+        if getter == "get_input_entity":
+            return _guarded_input_getter(client)
+        if getter == "get_entity":
+            return _guarded_entity_getter(client)
     return getattr(client, getter)
 
 
