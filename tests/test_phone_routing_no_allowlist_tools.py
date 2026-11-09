@@ -66,38 +66,51 @@ def make_client(title=None, contact=None):
         if isinstance(request, GetContacts):
             users = [contact] if contact else []
             return types.contacts.Contacts(contacts=[], saved_count=0, users=users)
-        if isinstance(request, functions.users.GetUsersRequest):
-            known = {u.id: u for u in (CONTACT, ALICE, SMALL, BIG)}
-            return [
-                known[getattr(i, "user_id", 777)]
-                for i in request.id
-                if getattr(i, "user_id", 777) in known
-            ]
-        if isinstance(request, functions.messages.GetChatsRequest):
-            return types.messages.Chats(chats=[])
-        if isinstance(request, functions.messages.GetMessagesRequest):
-            return types.messages.Messages(messages=[], chats=[], users=[])
-        if isinstance(request, functions.channels.GetParticipantsRequest):
-            return types.channels.ChannelParticipants(count=0, participants=[], chats=[], users=[])
-        if isinstance(request, functions.contacts.ResolveUsernameRequest):
-            return types.contacts.ResolvedPeer(
-                peer=types.PeerUser(ALICE.id), chats=[], users=[ALICE]
-            )
-        if isinstance(
-            request,
-            (
-                functions.messages.SendReactionRequest,
-                functions.messages.SaveDraftRequest,
-                functions.messages.SetTypingRequest,
-            ),
-        ):
-            return types.Updates(updates=[], users=[], chats=[], date=None, seq=0)
-        if isinstance(request, functions.messages.GetDialogsRequest):
-            return types.messages.Dialogs(dialogs=[], messages=[], chats=[], users=[])
-        raise AssertionError(f"unexpected request {request!r}")
+        return _static_answer(request)
 
     client._call = call
     return client
+
+
+def _known_users(request):
+    known = {u.id: u for u in (CONTACT, ALICE, SMALL, BIG)}
+    return [
+        known[getattr(i, "user_id", 777)]
+        for i in request.id
+        if getattr(i, "user_id", 777) in known
+    ]
+
+
+def _updates(request):
+    return types.Updates(updates=[], users=[], chats=[], date=None, seq=0)
+
+
+_STATIC_ANSWERS = {
+    functions.users.GetUsersRequest: _known_users,
+    functions.messages.GetChatsRequest: lambda r: types.messages.Chats(chats=[]),
+    functions.messages.GetMessagesRequest: lambda r: types.messages.Messages(
+        messages=[], chats=[], users=[]
+    ),
+    functions.channels.GetParticipantsRequest: lambda r: types.channels.ChannelParticipants(
+        count=0, participants=[], chats=[], users=[]
+    ),
+    functions.contacts.ResolveUsernameRequest: lambda r: types.contacts.ResolvedPeer(
+        peer=types.PeerUser(ALICE.id), chats=[], users=[ALICE]
+    ),
+    functions.messages.SendReactionRequest: _updates,
+    functions.messages.SaveDraftRequest: _updates,
+    functions.messages.SetTypingRequest: _updates,
+    functions.messages.GetDialogsRequest: lambda r: types.messages.Dialogs(
+        dialogs=[], messages=[], chats=[], users=[]
+    ),
+}
+
+
+def _static_answer(request):
+    answer = _STATIC_ANSWERS.get(type(request))
+    if answer is None:
+        raise AssertionError(f"unexpected request {request!r}")
+    return answer(request)
 
 
 def use(monkeypatch, client):
