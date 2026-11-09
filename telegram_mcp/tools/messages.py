@@ -1686,6 +1686,7 @@ async def transcribe_voice(
 
         config_error = transcription.engine_config_error(chosen_engine)
         if config_error:
+            record_tool_error("internal")
             return config_error
 
         duration = transcription.voice_duration(msg)

@@ -169,7 +169,7 @@ def _patch_admin_pairs():
             tg("UserNotParticipantError"),
             "patch-not-in-chat",
             "not in this chat",
-            kind="private",
+            kind="not_found",
             extra={"rpc_error": "USER_NOT_PARTICIPANT"},
         ),
     ]
@@ -191,6 +191,7 @@ def _pairs():
             expired,
             ok_join,
             "Successfully joined",
+            extra={"rpc_error": "INVITE_HASH_EXPIRED"},
             id="join_chat_by_link-expired",
         ),
         Pair(
@@ -200,6 +201,7 @@ def _pairs():
             invalid,
             ok_join,
             "Successfully joined",
+            extra={"rpc_error": "INVITE_HASH_INVALID"},
             id="join_chat_by_link-invalid",
         ),
         Pair(
@@ -209,6 +211,7 @@ def _pairs():
             expired,
             ok_imp,
             "Successfully joined",
+            extra={"rpc_error": "INVITE_HASH_EXPIRED"},
             id="import_chat_invite-expired",
         ),
         Pair(
@@ -218,6 +221,7 @@ def _pairs():
             invalid,
             ok_imp,
             "Successfully joined",
+            extra={"rpc_error": "INVITE_HASH_INVALID"},
             id="import_chat_invite-invalid",
         ),
         # (2) file-path security refusals

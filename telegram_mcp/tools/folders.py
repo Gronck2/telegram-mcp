@@ -747,7 +747,7 @@ async def create_folder(
             await cl(functions.messages.UpdateDialogFilterRequest(id=new_id, filter=new_filter))
         except telethon.errors.rpcerrorlist.BadRequestError as e:
             if "DIALOG_FILTERS_TOO_MUCH" in (getattr(e, "message", None) or str(e)):
-                record_tool_error("internal")
+                record_tool_error(**classify_error(e))
                 return (
                     "Cannot create folder: you've reached Telegram's folder limit "
                     "for your account. "

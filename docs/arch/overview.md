@@ -110,7 +110,9 @@ recorder (`ContextVar` holding a shared list, so `wait_for` and the fan-out
 `gather` tasks all write to it). `with_account` and the few bare-string
 refusals in tools (early returns, with or without an "Error:" prefix, and the file-path
 security helpers) record explicitly with `record_tool_error`; RPC `except` handlers record
-`classify_error(e)`. Deliberate gaps, left as plain successes: the `premium_required_result`
+`classify_error(e)`, with documented context overrides: `BOT_RESPONSE_TIMEOUT` is `timeout`, a send-as
+Premium requirement is `private`, `PEER_FLOOD` is `flood`, and a target not in the chat
+(`remove_user`, `_admin_to_patch`) is `not_found` (`private` for the account itself). Deliberate gaps, left as plain successes: the `premium_required_result`
 JSON refusals, `set_contact_alias` `saved: false` payloads, empty results, idempotent no-ops
 and per-item errors. Unknown RPC errors fall back by base class (400 invalid_argument, 403
 private, FloodError flood, else internal). A failure nothing recorded (escaped exception, raw

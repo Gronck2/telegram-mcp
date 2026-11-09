@@ -46,7 +46,7 @@ every consumer of the live deployment.
   caller or, where the kind depends on the reason, in the helper) and inline
   button refusals (a URL or copy button hands over its URL/text: an answer, not
   an error). RPC `except` handlers record `classify_error(e)` so kind and
-  `rpc_error` always agree with the classifier.
+  `rpc_error` agree with the classifier. Kinds come from the classifier except these documented context overrides: `BOT_RESPONSE_TIMEOUT` is `timeout`, a send-as Premium requirement is `private`, `PEER_FLOOD` (in `create_group`) is `flood`, and a target that is not in the chat (`remove_user`, `_admin_to_patch`) is `not_found` (`private` when the target is the account itself); `rpc_error` and `retry_after` are kept in each case.
   A tool failure nothing recorded (an escaped exception or a raw `ToolError`) is
   classified from its cause (`internal` for a generic one, the classifier's
   answer for an RPC error) in single-account and fan-out mode alike; only

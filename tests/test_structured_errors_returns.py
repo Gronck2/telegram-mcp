@@ -640,7 +640,7 @@ def folders_pairs():
         ),
         Pair(
             "create_folder",
-            "internal",
+            "invalid_argument",
             (
                 {"title": "F"},
                 lambda: fake(
@@ -654,6 +654,7 @@ def folders_pairs():
             "folder limit",
             ({"title": "F"}, lambda: fake(folder_routes())),
             '"success": true',
+            extra={"rpc_error": "DIALOG_FILTERS_TOO_MUCH"},
             id="create_folder-server-limit",
         ),
         Pair(

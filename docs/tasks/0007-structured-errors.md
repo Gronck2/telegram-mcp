@@ -205,3 +205,9 @@ structuredContent, and the opt-in policy). Not created here.
    a new kind.
 6. ADR: yes, short `docs/adr/0003-...`: `_meta` channel, kind list, opt-in
    policy and how the default is flipped later.
+7. Round-3 review: all 10 findings fixed in 0007 (items 1, 5, 6 mandatory):
+   not-in-chat kinds, folder limit, invite errors from the classifier,
+   `create_group` and `set_privacy_settings` resolve failures classified
+   (flood keeps `retry_after`), caption and transcription config refusals
+   recorded, fan-out records unclassified per-account failures, docs list the
+   context overrides.

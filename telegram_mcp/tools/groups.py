@@ -33,8 +33,8 @@ async def create_group(
             try:
                 user = await resolve_entity(user_id, cl)
                 users.append(user)
-            except Exception:
-                record_tool_error("not_found")
+            except Exception as resolve_err:
+                record_tool_error(**classify_error(resolve_err))
                 return "Error: Could not find a requested user."
 
         if not users:
@@ -1069,7 +1069,7 @@ async def remove_user(
                 user_id=user_id,
             )
         except telethon.errors.rpcerrorlist.UserNotParticipantError as e:
-            record_tool_error(**classify_error(e))
+            record_tool_error(**{**classify_error(e), "kind": "not_found"})
             return "Error: The user is not a member of this chat."
         except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
             record_tool_error(**classify_error(e))
@@ -1260,7 +1260,7 @@ async def _admin_to_patch(cl, chat, user, user_id, changes: Dict[str, bool]):
         )
     except telethon.errors.rpcerrorlist.UserNotParticipantError as e:
         who = "you are" if is_self else f"{user_id} is"
-        record_tool_error(**classify_error(e))
+        record_tool_error(**{**classify_error(e), "kind": "private" if is_self else "not_found"})
         return None, (
             f"Error: {who} not in this chat, so there are no admin rights to patch. "
             "Nothing was changed."
@@ -1767,10 +1767,10 @@ async def join_chat_by_link(link: str, account: Optional[str] = None) -> str:
     except Exception as e:
         err_str = str(e).lower()
         if "expired" in err_str:
-            record_tool_error("not_found")
+            record_tool_error(**classify_error(e))
             return "The invite hash has expired and is no longer valid."
         elif "invalid" in err_str:
-            record_tool_error("not_found")
+            record_tool_error(**classify_error(e))
             return "The invite hash is invalid or malformed."
         elif "already" in err_str and "participant" in err_str:
             return "You are already a member of this chat."
@@ -1851,10 +1851,10 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
         except Exception as join_err:
             err_str = str(join_err).lower()
             if "expired" in err_str:
-                record_tool_error("not_found")
+                record_tool_error(**classify_error(join_err))
                 return "The invite hash has expired and is no longer valid."
             elif "invalid" in err_str:
-                record_tool_error("not_found")
+                record_tool_error(**classify_error(join_err))
                 return "The invite hash is invalid or malformed."
             elif "already" in err_str and "participant" in err_str:
                 return "You are already a member of this chat."

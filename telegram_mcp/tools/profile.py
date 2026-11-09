@@ -270,10 +270,12 @@ async def set_privacy_settings(
             for identifier in identifiers or []:
                 try:
                     user = await resolve_entity(identifier, cl)
-                except Exception:
+                except Exception as resolve_err:
                     logger.warning("Could not resolve a requested privacy-rule user")
+                    record_tool_error(**classify_error(resolve_err))
                     return None
                 if not isinstance(user, User):
+                    record_tool_error("not_found")
                     return None
                 if user.is_self:
                     # utils.get_input_user would give InputUserSelf, which has no user_id,
@@ -283,9 +285,8 @@ async def set_privacy_settings(
             return users
 
         allow = await input_users(allow_users)
-        disallow = await input_users(disallow_users)
+        disallow = await input_users(disallow_users) if allow is not None else None
         if allow is None or disallow is None:
-            record_tool_error("not_found")
             return "Error: Could not find a requested user; privacy settings were not changed."
 
         current = await cl(functions.account.GetPrivacyRequest(key=privacy_key))

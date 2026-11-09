@@ -292,6 +292,7 @@ async def send_file(
 
         caption_kwargs, caption_error = _caption_format_kwargs(caption, parse_mode, custom_emojis)
         if caption_error:
+            record_tool_error("invalid_argument")
             return caption_error
 
         cl = get_client(account)
@@ -360,6 +361,7 @@ async def _send_album(
 
     caption_kwargs, caption_error = _caption_format_kwargs(caption, parse_mode, custom_emojis)
     if caption_error:
+        record_tool_error("invalid_argument")
         return caption_error
 
     cl = get_client(account)

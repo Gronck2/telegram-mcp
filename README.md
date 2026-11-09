@@ -941,7 +941,9 @@ missing object, missing rights, allowlist, internal. This includes the file-path
 security refusals (`invalid_argument`), expired or invalid invites (`not_found`),
 the `resolve_phone` rate limit (`flood` with `retry_after`; a broken limiter
 configuration is `internal`), and every Telegram RPC error a tool catches (kind
-and `rpc_error` always come from the classifier; `USER_NOT_MUTUAL_CONTACT` and
+and `rpc_error` come from the classifier, except these context overrides: `BOT_RESPONSE_TIMEOUT` is
+`timeout`, a send-as Premium requirement is `private`, `PEER_FLOOD` is `flood`, and a target not in the
+chat (`remove_user`, admin-rights patching) is `not_found`, or `private` for your own account; `USER_NOT_MUTUAL_CONTACT` and
 `USER_IS_BLOCKED` are `private`). Known gaps, left as plain successes on purpose:
 the JSON refusals of `premium_required_result` (`send_message`, `edit_message`,
 `transcribe_voice`), the `saved: false` payloads of `set_contact_alias`, empty

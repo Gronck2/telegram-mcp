@@ -1063,9 +1063,24 @@ def with_account(readonly=False):
                         e.get("account") == label for e in recorder.entries
                     ):
                         record_tool_error("internal")
+                except Exception as error:
+                    # Unclassified failure on this account: record its cause so _meta
+                    # lists every account, then let the call fail as before.
+                    if recorder is not None and not any(
+                        e.get("account") == label for e in recorder.entries
+                    ):
+                        record_tool_error(**classify_error(error))
+                    raise
                 return label, result, failed
 
-            results = await asyncio.gather(*(_call_for(label) for label in clients))
+            # Let every account finish (and record) before an escaped failure propagates,
+            # so _meta lists each account rather than only the fastest to fail.
+            results = await asyncio.gather(
+                *(_call_for(label) for label in clients), return_exceptions=True
+            )
+            for outcome in results:
+                if isinstance(outcome, BaseException):
+                    raise outcome
             if all(failed for _, _, failed in results):
                 raise ToolError(
                     "\n\n".join(f"[{label}]\n{result}" for label, result, _ in results)
