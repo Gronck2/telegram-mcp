@@ -37,6 +37,7 @@ from mcp.shared.exceptions import McpError
 from pythonjsonlogger.json import JsonFormatter
 from telethon import TelegramClient, functions, types, utils
 from telethon.errors import AuthKeyDuplicatedError, FloodWaitError, BotMethodInvalidError, RPCError
+from telethon.errors.rpcbaseerrors import BadRequestError, FloodError, ForbiddenError
 from telethon.errors.rpcerrorlist import rpc_errors_dict
 from telethon.sessions import StringSession
 from telethon.tl.types import (
@@ -240,6 +241,13 @@ _error_recorder: ContextVar[Optional[_ErrorRecorder]] = ContextVar(
 _error_account: ContextVar[Optional[str]] = ContextVar("telegram_mcp_error_account", default=None)
 
 
+def mark_last_error_needs_user() -> None:
+    """Flag the most recent recorded error as an ask-the-user instruction."""
+    recorder = _error_recorder.get()
+    if recorder is not None and recorder.entries:
+        recorder.entries[-1]["needs_user"] = True
+
+
 def record_tool_error(kind: str, **fields: Any) -> None:
     """Record that the running tool call failed with ``kind`` (no-op when disabled)."""
     recorder = _error_recorder.get()
@@ -252,14 +260,11 @@ def record_tool_error(kind: str, **fields: Any) -> None:
     recorder.entries.append(entry)
 
 
-_ENTRY_DETAIL_KEYS = ("retry_after", "rpc_error", "needs_user")
-
-
 def _error_meta(recorder: _ErrorRecorder, timed_out: bool) -> tuple[dict, bool]:
     """Build the ``_meta`` error object and whether the call failed overall."""
     entries = [{"kind": "timeout"}] if timed_out else recorder.entries
     if not entries:
-        entries = [{"kind": "internal"}]
+        entries = [{"kind": "invalid_argument"}]
     plain = [{k: v for k, v in e.items() if k != "account"} for e in entries]
     if not recorder.fanout:
         return dict(plain[-1]), True
@@ -270,9 +275,8 @@ def _error_meta(recorder: _ErrorRecorder, timed_out: bool) -> tuple[dict, bool]:
     else:
         kinds = {p["kind"] for p in plain}
         meta = {"kind": kinds.pop() if len(kinds) == 1 else "internal"}
-    meta["accounts"] = [by_account[label] for label in sorted(by_account)] or [
-        {"kind": meta["kind"]}
-    ]
+    if by_account:
+        meta["accounts"] = [by_account[label] for label in sorted(by_account)]
     return meta, failed_all
 
 
@@ -968,7 +972,7 @@ def get_client(account: str = None) -> TelegramClient:
         raise ValueError(f"Account is required. Available accounts: {', '.join(clients.keys())}")
     label = canonical_account_label(account)
     if label not in clients:
-        raise ValueError(
+        raise InvalidReferenceError(
             f"Unknown account '{account}'. Available accounts: {', '.join(clients.keys())}"
         )
     return clients[label]
@@ -1884,7 +1888,7 @@ def _telegram_error_name(error: RPCError) -> Optional[str]:
     name = _RPC_ERROR_NAMES.get(type(error))
     if name is None and type(error).__module__ == "telethon.errors.rpcbaseerrors":
         name = error.message
-    if isinstance(name, str) and _TELEGRAM_ERROR_NAME_RE.fullmatch(name):
+    if isinstance(name, str) and len(name) <= 64 and _TELEGRAM_ERROR_NAME_RE.fullmatch(name):
         return name
     return None
 
@@ -1956,7 +1960,7 @@ def _classify_rpc(error: RPCError) -> dict:
     name = _telegram_error_name(error)
     keys = {name, type(error).__name__}
     info: dict = {"rpc_error": name or type(error).__name__}
-    if keys & _FLOOD_RPC:
+    if keys & _FLOOD_RPC or isinstance(error, FloodError):
         info["kind"] = "flood"
         seconds = getattr(error, "seconds", None)
         if isinstance(seconds, int) and seconds > 0:
@@ -1964,6 +1968,10 @@ def _classify_rpc(error: RPCError) -> dict:
     elif keys & _NOT_FOUND_RPC:
         info["kind"] = "not_found"
     elif keys & _PRIVATE_RPC:
+        info["kind"] = "private"
+    elif isinstance(error, BadRequestError):
+        info["kind"] = "invalid_argument"
+    elif isinstance(error, ForbiddenError):
         info["kind"] = "private"
     else:
         info["kind"] = "internal"
@@ -1993,7 +2001,10 @@ def log_and_format_error(
     Returns:
         A user-friendly error message with an error code.
     """
-    record_tool_error(**classify_error(error, prefix))
+    if isinstance(error, BaseException):
+        # Call sites that pass the arguments in the wrong order record the real
+        # classification themselves (see tools/chats.py resolve_username).
+        record_tool_error(**classify_error(error, prefix))
 
     # An ask-the-user instruction is normal control flow, not a failure: return it
     # verbatim and never log the user's nickname at ERROR level.
@@ -2144,7 +2155,7 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                                 return value, None
                             # Unknown or ambiguous reference: hand the agent an
                             # instruction to ask the user instead of a dead end.
-                            return None, alias_ask_payload(value)
+                            return None, _AskPayload(alias_ask_payload(value))
 
                     # Handle other invalid types
                     return (
@@ -2157,29 +2168,31 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                     for item in param_value:
                         validated_item, error_msg = validate_single_id(item, param_name)
                         if error_msg:
-                            return error_result(
-                                log_and_format_error(
-                                    func.__name__,
-                                    ValidationError(error_msg),
-                                    prefix="VALIDATION-001",
-                                    user_message=error_msg,
-                                    **{param_name: param_value},
-                                )
-                            )
-                        validated_list.append(validated_item)
-                    kwargs[param_name] = validated_list
-                else:
-                    validated_value, error_msg = validate_single_id(param_value, param_name)
-                    if error_msg:
-                        return error_result(
-                            log_and_format_error(
+                            formatted = log_and_format_error(
                                 func.__name__,
                                 ValidationError(error_msg),
                                 prefix="VALIDATION-001",
                                 user_message=error_msg,
                                 **{param_name: param_value},
                             )
+                            if isinstance(error_msg, _AskPayload):
+                                mark_last_error_needs_user()
+                            return error_result(formatted)
+                        validated_list.append(validated_item)
+                    kwargs[param_name] = validated_list
+                else:
+                    validated_value, error_msg = validate_single_id(param_value, param_name)
+                    if error_msg:
+                        formatted = log_and_format_error(
+                            func.__name__,
+                            ValidationError(error_msg),
+                            prefix="VALIDATION-001",
+                            user_message=error_msg,
+                            **{param_name: param_value},
                         )
+                        if isinstance(error_msg, _AskPayload):
+                            mark_last_error_needs_user()
+                        return error_result(formatted)
                     kwargs[param_name] = validated_value
 
                 # Per-chat privacy allowlist enforcement
@@ -2719,6 +2732,10 @@ _PEER_ERRORS = (
     telethon.errors.rpcerrorlist.ChannelInvalidError,
     telethon.errors.rpcerrorlist.ChannelPrivateError,
 )
+
+
+class _AskPayload(str):
+    """Marks a validate_id error message that is an ask-the-user instruction."""
 
 
 class AliasNeedsUser(Exception):

@@ -130,7 +130,7 @@ def text(result):
         ("rpc_notfound", {"kind": "not_found", "rpc_error": "PEER_ID_INVALID"}),
         ("private", {"kind": "private", "rpc_error": "CHANNEL_PRIVATE"}),
         ("admin", {"kind": "private", "rpc_error": "CHAT_ADMIN_REQUIRED"}),
-        ("other_rpc", {"kind": "internal", "rpc_error": "ABOUT_TOO_LONG"}),
+        ("other_rpc", {"kind": "invalid_argument", "rpc_error": "ABOUT_TOO_LONG"}),
         ("validation", {"kind": "invalid_argument"}),
         ("alias", {"kind": "invalid_argument", "needs_user": True}),
         ("unknown", {"kind": "internal"}),
@@ -203,10 +203,10 @@ async def test_tool_error_path_carries_kind(single, on):
 
 
 @pytest.mark.asyncio
-async def test_unrecorded_exception_is_internal(single, on):
+async def test_unrecorded_toolerror_is_invalid_argument(single, on):
     result = await call(mode="bare_toolerror", account="one")
     assert result.isError is True
-    assert result.meta == {META: {"kind": "internal"}}
+    assert result.meta == {META: {"kind": "invalid_argument"}}
 
 
 @pytest.mark.asyncio
@@ -300,3 +300,50 @@ async def test_leak_check_meta_has_only_fixed_fields(single, on):
         meta = result.meta[META]
         assert set(meta) <= {"kind", "retry_after", "rpc_error", "needs_user", "accounts"}
         assert "hostile" not in json.dumps(result.meta)
+
+
+def test_flood_subclasses_with_seconds_are_flood_with_retry_after():
+    for cls in (errors.FloodPremiumWaitError, errors.FloodTestPhoneWaitError):
+        info = classify_error(cls(request=None, capture=12))
+        assert info["kind"] == "flood" and info["retry_after"] == 12
+
+
+def test_rpc_fallback_by_base_class():
+    from telethon.errors.rpcbaseerrors import ForbiddenError, ServerError
+
+    assert classify_error(errors.AboutTooLongError(request=None))["kind"] == "invalid_argument"
+    assert classify_error(ForbiddenError(request=None, message="X_Y"))["kind"] == "private"
+    assert classify_error(ServerError(request=None, message="X_Y"))["kind"] == "internal"
+    # curated sets still win over the base-class fallback
+    assert classify_error(errors.PeerIdInvalidError(request=None))["kind"] == "not_found"
+
+
+def test_overlong_rpc_error_name_is_dropped():
+    from telethon.errors.rpcbaseerrors import ServerError
+
+    info = classify_error(ServerError(request=None, message="A" * 200))
+    assert info["kind"] == "internal"
+    assert "A" * 65 not in json.dumps(info)
+    assert len(info["rpc_error"]) <= 64
+
+
+def test_get_client_unknown_account_is_invalid_reference(monkeypatch):
+    monkeypatch.setattr(runtime, "clients", {"a": SimpleNamespace()})
+    with pytest.raises(runtime.InvalidReferenceError):
+        runtime.get_client("zzz")
+    assert classify_error(runtime.InvalidReferenceError("x")) == {"kind": "invalid_argument"}
+
+
+@pytest.mark.asyncio
+async def test_fastmcp_input_error_and_unknown_tool_are_invalid_argument(single, on):
+    for result in (await call(PROBE, nonsense=1), await call("no_such_tool_zz")):
+        assert result.isError is True
+        assert result.meta == {META: {"kind": "invalid_argument"}}
+
+
+@pytest.mark.asyncio
+async def test_no_labelless_accounts_entry(multi, on):
+    result = await call(mode="bare_toolerror")
+    assert result.isError is True
+    for entry in result.meta[META].get("accounts", []):
+        assert "account" in entry

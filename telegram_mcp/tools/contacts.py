@@ -373,6 +373,7 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
     """
     digits = normalize_phone(phone)
     if digits is None:
+        record_tool_error("invalid_argument")
         return (
             "Error: phone must be an international number starting with + and the country "
             f"code (not 0), {PHONE_MIN_DIGITS} to {PHONE_MAX_DIGITS} digits in total."
@@ -405,6 +406,7 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
     except PhoneNotOccupiedError:
         return NO_PHONE_USER_MESSAGE
     except PhoneNumberInvalidError:
+        record_tool_error("invalid_argument")
         return (
             "Error: Telegram rejected this phone number as invalid. "
             "Pass it in international format with the country code."
@@ -420,6 +422,7 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
     # Remove @ if present
     username_clean = username.lstrip("@")
     if not username_clean:
+        record_tool_error("invalid_argument")
         return "Error: Username cannot be empty."
 
     # Acting on a user needs write access to that user's private chat.
@@ -437,12 +440,14 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
 
         # Extract user from the result
         if not resolve_result.users:
+            record_tool_error("not_found")
             return f"Error: User with username @{username_clean} not found."
 
         # Act only on the peer Telegram resolved the username to, never on whichever
         # user happens to come first in the result.
         peer = getattr(resolve_result, "peer", None)
         if not isinstance(peer, types.PeerUser):
+            record_tool_error("invalid_argument")
             return "Error: Resolved entity is not a user."
         user = next(
             (
@@ -453,6 +458,7 @@ async def _add_contact_by_username(cl, account, username, first_name, last_name)
             None,
         )
         if user is None:
+            record_tool_error("not_found")
             return f"Error: User with username @{username_clean} not found."
 
         # The pre-check above resolved through local aliases; what is acted on is the
@@ -542,6 +548,7 @@ async def add_contact(
 
         # Validate that at least one identifier is provided
         if not phone and not username:
+            record_tool_error("invalid_argument")
             return "Error: Either phone or username must be provided."
 
         # If username is provided, use it for username-based contact addition
@@ -569,6 +576,7 @@ async def add_contact(
             else:
                 return _import_failure_text("Contact not added. Response:", result)
         else:
+            record_tool_error("invalid_argument")
             return "Error: Phone number is required when username is not provided."
     except (ImportError, AttributeError) as type_err:
         # Try alternative approach using raw API (only for phone-based)
@@ -678,6 +686,7 @@ async def import_contacts(contacts: list, account: Optional[str] = None) -> str:
         if not all(
             isinstance(c, dict) and c.get("phone") and c.get("first_name") for c in contacts
         ):
+            record_tool_error("invalid_argument")
             return "Error: every contact needs a 'phone' and a 'first_name'; nothing was imported."
         cl = get_client(account)
         await ensure_connected(cl)

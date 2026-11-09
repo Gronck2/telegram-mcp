@@ -528,6 +528,7 @@ async def download_media(
         entity = await resolve_entity(chat_id, cl)
         msg = await cl.get_messages(entity, ids=message_id)
         if not msg:
+            record_tool_error("not_found")
             return "No media found in the specified message."
 
         # Block-format posts keep their embedded photos/videos as ids resolved
@@ -538,8 +539,10 @@ async def download_media(
             if media_id is not None:
                 pool = [m for m in pool if str(m["id"]) == str(media_id).strip()]
                 if not pool:
+                    record_tool_error("not_found")
                     return f"No rich media with id {media_id} in message {message_id}."
             if not pool:
+                record_tool_error("not_found")
                 return "No media found in the specified message."
             target = pool[0]["media"]
         elif media_id is not None:
@@ -732,6 +735,7 @@ async def get_media_info(
         msg = await cl.get_messages(entity, ids=message_id)
 
         if not msg:
+            record_tool_error("not_found")
             return "No media found in the specified message."
         if msg.media:
             return str(msg.media)
@@ -739,6 +743,7 @@ async def get_media_info(
         # rich_message.photos/documents — report the resolved objects.
         rich = [m["media"] for m in rich_message_media(msg) if m["media"] is not None]
         if not rich:
+            record_tool_error("not_found")
             return "No media found in the specified message."
         return "\n".join(str(m) for m in rich)
     except Exception as e:
@@ -930,6 +935,7 @@ async def list_photos(
     try:
         resolved_source = validate_source(source)
     except UnknownPhotoSource:
+        record_tool_error("invalid_argument")
         return "Unknown photo source. Expected one of: avatars, messages."
 
     try:
@@ -1049,6 +1055,7 @@ async def get_photo_sheet(
     try:
         resolved_source = validate_source(source)
     except UnknownPhotoSource:
+        record_tool_error("invalid_argument")
         return "Unknown photo source. Expected one of: avatars, messages."
 
     try:
@@ -1066,6 +1073,7 @@ async def get_photo_sheet(
             if thumbnail_bytes:
                 tiles.append((thumbnail_bytes, str(reference.identifier)))
         if not tiles:
+            record_tool_error("internal")
             return f"No {resolved_source} photos could be downloaded for chat {chat_id}."
 
         try:
@@ -1164,6 +1172,7 @@ async def inspect_document(
         # Downloading the file strictly into memory (bytes)
         data = await cl.download_media(msg, file=bytes)
         if not data:
+            record_tool_error("internal")
             return "Failed to read the contents of the document."
 
         # 1. If this is an image or scan

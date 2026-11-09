@@ -288,16 +288,24 @@ CASES = [
         labels=("one", "two"),
     ),
 ]
-# Known production defects found by this suite (see the report); strict, so fixing
-# the defect turns the xfail into a failure that says to drop the marker.
-KNOWN_BUGS = {
-    # validate_id wraps the ask-the-user payload in a ValidationError: no needs_user.
-    "alias_unknown_ask": "validate_id path records invalid_argument without needs_user",
-    # resolve_username calls log_and_format_error("normalize_username", "resolve_username",
-    # e, ...): the exception lands in `prefix`, so classify_error sees a str -> internal.
-    "resolve_username_unknown": "swapped log_and_format_error arguments in resolve_username",
-    "resolve_username_flood": "swapped log_and_format_error arguments in resolve_username",
-}
+# Added after the golden file was recorded (the golden test covers CASES only).
+NEW_CASES = [
+    Case(
+        "bare_return_poll_empty_question",
+        "create_poll",
+        dict(chat_id=5, question="", options=["a", "b"]),
+        lambda: _chan_client(),
+        {"kind": "invalid_argument"},
+    ),
+    Case(
+        "bare_return_poll_one_option",
+        "create_poll",
+        dict(chat_id=5, question="q", options=["a"]),
+        lambda: _chan_client(),
+        {"kind": "invalid_argument"},
+    ),
+]
+KNOWN_BUGS: dict = {}
 IDS = [c.id for c in CASES]
 PARAMS = [
     pytest.param(
@@ -307,7 +315,7 @@ PARAMS = [
             [pytest.mark.xfail(reason=KNOWN_BUGS[c.id], strict=True)] if c.id in KNOWN_BUGS else []
         ),
     )
-    for c in CASES
+    for c in CASES + NEW_CASES
 ]
 
 

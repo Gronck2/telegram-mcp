@@ -34,9 +34,11 @@ async def create_group(
                 user = await resolve_entity(user_id, cl)
                 users.append(user)
             except Exception:
+                record_tool_error("not_found")
                 return "Error: Could not find a requested user."
 
         if not users:
+            record_tool_error("invalid_argument")
             return "Error: No valid users provided"
 
         # Create the group with the users
@@ -72,6 +74,7 @@ async def create_group(
 
         except Exception as create_err:
             if "PEER_FLOOD" in str(create_err):
+                record_tool_error("internal")
                 return "Error: Cannot create group due to Telegram limits. Try again later."
             else:
                 raise  # Let the outer exception handler catch it
@@ -118,6 +121,7 @@ async def invite_to_group(
                 user = await resolve_entity(user_id, cl)
                 users_to_add.append(user)
             except ValueError:
+                record_tool_error("not_found")
                 return "Error: A requested user could not be found."
 
         try:
@@ -192,11 +196,13 @@ async def invite_to_group(
                     msg += f" (not added: {', '.join(map(str, missing))})"
                 return msg
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
+            record_tool_error("private")
             return (
                 "Error: Cannot invite users who are not mutual contacts. "
                 "Please ensure the users are in your contacts and have added you back."
             )
         except telethon.errors.rpcerrorlist.UserPrivacyRestrictedError:
+            record_tool_error("private")
             return (
                 "Error: One or more users have privacy settings that prevent you from adding them."
             )
@@ -451,8 +457,10 @@ async def upgrade_group_to_supergroup(
         if isinstance(entity, Channel):
             if getattr(entity, "megagroup", False):
                 return f"Chat {chat_id} is already a supergroup (ID: {get_marked_id(entity)})."
+            record_tool_error("invalid_argument")
             return f"Error: chat {chat_id} is a broadcast channel, not a basic group."
         if not isinstance(entity, Chat):
+            record_tool_error("invalid_argument")
             return f"Error: chat {chat_id} is not a basic group."
 
         title = sanitize_name(getattr(entity, "title", str(chat_id)))
@@ -476,6 +484,7 @@ async def upgrade_group_to_supergroup(
             f"the new ID. Call upgrade_group_to_supergroup again with {chat_id} to look it up."
         )
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: only the group creator can upgrade it to a supergroup."
     except Exception as e:
         return log_and_format_error("upgrade_group_to_supergroup", e, chat_id=chat_id)
@@ -507,6 +516,7 @@ async def edit_chat_title(
             # negative Bot-API-style id or a username, which Telegram rejects.
             await cl(functions.messages.EditChatTitleRequest(chat_id=entity.id, title=title))
         else:
+            record_tool_error("invalid_argument")
             return f"Cannot edit title for this entity type ({type(entity)})."
         return f"Chat {chat_id} title updated to '{sanitize_name(title)}'."
     except Exception as e:
@@ -551,6 +561,7 @@ async def edit_chat_photo(
             input_photo = InputChatUploadedPhoto(file=uploaded_file)
             await cl(functions.messages.EditChatPhotoRequest(chat_id=entity.id, photo=input_photo))
         else:
+            record_tool_error("invalid_argument")
             return f"Cannot edit photo for this entity type ({type(entity)})."
 
         return f"Chat {chat_id} photo updated from {safe_path}."
@@ -587,8 +598,10 @@ async def edit_chat_about(
     except telethon.errors.rpcerrorlist.ChatAboutNotModifiedError:
         return f"Chat {chat_id} description is already set to the requested value."
     except telethon.errors.rpcerrorlist.ChatAboutTooLongError:
+        record_tool_error("invalid_argument")
         return "Error: description exceeds Telegram's 255 character limit."
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: admin rights required to edit the chat description."
     except Exception as e:
         return log_and_format_error("edit_chat_about", e, chat_id=chat_id)
@@ -621,6 +634,7 @@ async def delete_chat_photo(chat_id: Union[int, str], account: Optional[str] = N
                 )
             )
         else:
+            record_tool_error("invalid_argument")
             return f"Cannot delete photo for this entity type ({type(entity)})."
 
         return f"Chat {chat_id} photo deleted."
@@ -708,6 +722,7 @@ async def promote_admin(
             )
             return f"Successfully promoted user {user_id} to admin in {sanitize_name(chat.title)}"
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
+            record_tool_error("private")
             return (
                 "Error: Cannot promote users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -775,6 +790,7 @@ async def demote_admin(
             )
             return f"Successfully demoted user {user_id} from admin in {sanitize_name(chat.title)}"
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
+            record_tool_error("private")
             return (
                 "Error: Cannot modify admin status of users who are not mutual "
                 "contacts. Please ensure the user is in your contacts and has "
@@ -839,6 +855,7 @@ async def ban_user(
             )
             return f"User {user_id} banned from chat {sanitize_name(chat.title)} (ID: {chat_id})."
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
+            record_tool_error("private")
             return (
                 "Error: Cannot ban users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -903,6 +920,7 @@ async def unban_user(
                 f"User {user_id} unbanned from chat {sanitize_name(chat.title)} (ID: {chat_id})."
             )
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
+            record_tool_error("private")
             return (
                 "Error: Cannot modify status of users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -1007,6 +1025,7 @@ async def remove_user(
         user = await resolve_entity(user_id, cl)
 
         if getattr(user, "is_self", False):
+            record_tool_error("invalid_argument")
             return "Error: remove_user cannot target the current account. Use leave_chat instead."
 
         try:
@@ -1019,8 +1038,10 @@ async def remove_user(
                 )
                 participant = found.participant
                 if isinstance(participant, types.ChannelParticipantLeft):
+                    record_tool_error("not_found")
                     return "Error: The user is not a member of this chat."
                 if isinstance(participant, types.ChannelParticipantBanned) and participant.left:
+                    record_tool_error("invalid_argument")
                     return (
                         "Error: The user is already banned from this chat. "
                         "Use unban_user to let them back in."
@@ -1029,6 +1050,7 @@ async def remove_user(
             elif isinstance(chat, Chat):
                 await cl(functions.messages.DeleteChatUserRequest(chat_id=chat.id, user_id=user))
             else:
+                record_tool_error("invalid_argument")
                 return "Error: chat_id must be a group or channel, not a user."
             return (
                 f"User {user_id} removed from chat {sanitize_name(chat.title)} "
@@ -1043,10 +1065,13 @@ async def remove_user(
                 user_id=user_id,
             )
         except telethon.errors.rpcerrorlist.UserNotParticipantError:
+            record_tool_error("not_found")
             return "Error: The user is not a member of this chat."
         except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+            record_tool_error("private")
             return "Error: admin rights required to remove members from this chat."
         except telethon.errors.rpcerrorlist.UserAdminInvalidError:
+            record_tool_error("invalid_argument")
             return (
                 "Error: Cannot remove this user - they are an admin. "
                 "Demote them first (demote_admin)."
@@ -1129,6 +1154,7 @@ async def set_default_chat_permissions(
         )
         return f"Default permissions for chat {chat_id} updated."
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: admin rights required to change default permissions."
     except telethon.errors.rpcerrorlist.ChatNotModifiedError:
         return f"Chat {chat_id} default permissions unchanged (already matched)."
@@ -1164,12 +1190,14 @@ async def toggle_slow_mode(
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
         if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False):
+            record_tool_error("invalid_argument")
             return "Error: slow mode is only supported for supergroups."
         await cl(functions.channels.ToggleSlowModeRequest(channel=entity, seconds=seconds))
         if seconds == 0:
             return f"Slow mode disabled for chat {chat_id}."
         return f"Slow mode enabled for chat {chat_id} (interval: {seconds}s)."
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: admin rights required to toggle slow mode."
     except Exception as e:
         return log_and_format_error("toggle_slow_mode", e, chat_id=chat_id, seconds=seconds)
@@ -1269,11 +1297,13 @@ async def _patch_admin_rights(
     installed layer that are not parameters of edit_admin_rights are kept too.
     """
     if not changes and rank is None:
+        record_tool_error("invalid_argument")
         return (
             'Error: mode="patch" changes only the rights and rank passed, and none were. '
             "Pass at least one right (True or False) or rank."
         )
     if not isinstance(chat, Channel):
+        record_tool_error("invalid_argument")
         return 'Error: mode="patch" works in supergroups and channels only.'
     participant, error = await _admin_to_patch(cl, chat, user, user_id, changes)
     if error:
@@ -1284,6 +1314,7 @@ async def _patch_admin_rights(
     }
     after = {**before, **changes}
     if not any(after.values()):
+        record_tool_error("invalid_argument")
         return (
             "Error: the patch would turn off every right, which demotes the user; "
             "use demote_admin for that. Nothing was changed."
@@ -1393,6 +1424,7 @@ async def edit_admin_rights(
     try:
         if mode not in get_args(AdminRightsMode):
             known = ", ".join(get_args(AdminRightsMode))
+            record_tool_error("invalid_argument")
             return f"Error: unknown mode {mode!r}. Known modes: {known}."
         cl = get_client(account)
         await ensure_connected(cl)
@@ -1409,13 +1441,16 @@ async def edit_admin_rights(
         )
         return f"Admin rights updated for user {user_id} in chat {chat_id}."
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: you need admin rights (with 'add_admins') to modify admin rights."
     except telethon.errors.rpcerrorlist.UserAdminInvalidError:
+        record_tool_error("private")
         return (
             "Error: cannot modify admin rights for this user "
             "(you may need to have promoted them originally)."
         )
     except telethon.errors.rpcerrorlist.RightForbiddenError:
+        record_tool_error("invalid_argument")
         return (
             "Error: some of the requested rights are not allowed for your "
             "account or for this chat."
@@ -1527,6 +1562,7 @@ async def get_member_admin_status(
         await ensure_connected(cl)
         chat = await resolve_entity(chat_id, cl)
         if not isinstance(chat, Channel):
+            record_tool_error("private")
             return (
                 "Error: get_member_admin_status supports only supergroups and channels. "
                 "Basic groups do not have per-admin rights."
@@ -1551,6 +1587,7 @@ async def get_member_admin_status(
         }
         return format_tool_result([record])
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+        record_tool_error("private")
         return "Error: you need admin rights in this chat to inspect its members."
     except Exception as e:
         return log_and_format_error("get_member_admin_status", e, chat_id=chat_id, user_id=user_id)
@@ -1632,6 +1669,7 @@ async def get_invite_link(chat_id: Union[int, str], account: Optional[str] = Non
         except Exception:
             logger.warning("GetFullChatRequest failed")
 
+        record_tool_error("internal")
         return "Could not retrieve invite link for this chat."
     except Exception as e:
         return log_and_format_error("get_invite_link", e, chat_id=chat_id)
@@ -1806,8 +1844,10 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
             elif "already" in err_str and "participant" in err_str:
                 return "You are already a member of this chat."
             elif "admin" in err_str:
+                record_tool_error("private")
                 return "Cannot join this chat - requires admin approval."
             elif "too much" in err_str or "too many" in err_str:
+                record_tool_error("internal")
                 return "Cannot join this chat - it has reached maximum number of participants."
             else:
                 raise  # Re-raise to be caught by the outer exception handler

@@ -184,6 +184,7 @@ async def get_folder_snapshot(account: Optional[str] = None) -> str:
     """
     try:
         if is_chat_allowlist_enabled():
+            record_tool_error("forbidden_allowlist")
             return "Error: complete folder snapshots are unavailable with a chat allowlist."
         cl = get_client(account)
         result = await cl(functions.messages.GetDialogFiltersRequest())
@@ -325,17 +326,21 @@ async def update_folder(
             if not isinstance(patch["title_entities"], list):
                 raise _FolderValidationError("Error: title_entities must be a list.")
         if is_chat_allowlist_enabled():
+            record_tool_error("forbidden_allowlist")
             return "Error: complete folder updates are unavailable with a chat allowlist."
         cl = get_client(account)
         result = await cl(functions.messages.GetDialogFiltersRequest())
         target = next((f for f in result.filters if getattr(f, "id", None) == folder_id), None)
         if target is None:
+            record_tool_error("not_found")
             return f"Error: folder {folder_id} not found."
         if not isinstance(target, DialogFilter):
+            record_tool_error("invalid_argument")
             return "Error: shared folders cannot be edited by update_folder."
         self_id = await _snapshot_self_id(cl, [target])
         before = _folder_state(target, self_id)
         if expected_revision is not None and expected_revision != before["revision"]:
+            record_tool_error("invalid_argument")
             return "Error: folder changed since the snapshot; read a fresh snapshot first."
         updated = copy.deepcopy(target)
         if "title" in patch:
@@ -379,6 +384,7 @@ async def update_folder(
                 for name in ("contacts", "non_contacts", "groups", "broadcasts", "bots")
             )
         ):
+            record_tool_error("invalid_argument")
             return "Error: folder needs at least one included peer or inclusion rule."
         limits = (await _read_folder_limits(cl))["limits"]
         included = {
@@ -386,17 +392,20 @@ async def update_folder(
         }
         excluded = {_stable_peer_id(p, self_id) for p in updated.exclude_peers}
         if included & excluded:
+            record_tool_error("invalid_argument")
             return "Error: included/pinned and excluded peer lists must not overlap."
         chats_limit = limits["chats_per_folder"]
         if chats_limit is not None and (
             len(included) > chats_limit or len(excluded) > chats_limit
         ):
+            record_tool_error("invalid_argument")
             return (
                 f"Error: explicit peer count exceeds the configured "
                 f"per-folder limit ({chats_limit})."
             )
         pin_limit = limits["pinned_per_folder"]
         if pin_limit is not None and len(updated.pinned_peers) > pin_limit:
+            record_tool_error("invalid_argument")
             return (
                 f"Error: pinned peer count exceeds the configured per-folder limit ({pin_limit})."
             )
@@ -417,6 +426,7 @@ async def update_folder(
             not isinstance(current, DialogFilter)
             or _folder_state(current, self_id)["revision"] != before["revision"]
         ):
+            record_tool_error("invalid_argument")
             return "Error: folder changed while preparing the update; read a fresh snapshot first."
         await cl(functions.messages.UpdateDialogFilterRequest(id=folder_id, filter=updated))
         return json.dumps(
@@ -677,6 +687,7 @@ async def create_folder(
             limit, premium = configured_limit
             if folder_count >= limit:
                 tier = "Premium" if premium else "regular"
+                record_tool_error("internal")
                 return (
                     f"Cannot create folder: you've reached Telegram's folder limit "
                     f"of {limit} for your {tier} account ({folder_count} folders). "
@@ -695,6 +706,7 @@ async def create_folder(
                 try:
                     peer = await resolve_input_entity(chat_id, cl)
                 except Exception:
+                    record_tool_error("not_found")
                     return "Failed to resolve a requested chat."
                 # Saved Messages (InputPeerSelf) is the account's own chat: no allowlist
                 # check, and utils.get_peer_id() cannot cast that peer anyway.
@@ -734,6 +746,7 @@ async def create_folder(
             await cl(functions.messages.UpdateDialogFilterRequest(id=new_id, filter=new_filter))
         except telethon.errors.rpcerrorlist.BadRequestError as e:
             if "DIALOG_FILTERS_TOO_MUCH" in (getattr(e, "message", None) or str(e)):
+                record_tool_error("internal")
                 return (
                     "Cannot create folder: you've reached Telegram's folder limit "
                     "for your account. "
@@ -797,6 +810,7 @@ async def add_chat_to_folder(
         try:
             peer = await resolve_input_entity(chat_id, cl)
         except Exception:
+            record_tool_error("not_found")
             return "Failed to resolve a requested chat."
 
         # Check if already included (idempotent)
@@ -900,6 +914,7 @@ async def remove_chat_from_folder(
             peer = await resolve_input_entity(chat_id, cl)
             peer_id = utils.get_peer_id(peer)
         except Exception:
+            record_tool_error("not_found")
             return "Failed to resolve a requested chat."
 
         # Filter out the peer from both include and pinned lists
@@ -986,6 +1001,7 @@ async def delete_folder(folder_id: int, account: Optional[str] = None) -> str:
         await ensure_connected(cl)
         # System folders (id < 2) cannot be deleted
         if folder_id < 2:
+            record_tool_error("invalid_argument")
             return (
                 f"Cannot delete system folder (ID {folder_id}). "
                 "Only custom folders can be deleted."
@@ -1151,6 +1167,7 @@ async def get_chatlist_invite(link: str, account: Optional[str] = None) -> str:
     try:
         slug = _parse_chatlist_slug(link)
         if slug is None:
+            record_tool_error("invalid_argument")
             return "Error: link is not a valid shared folder slug or t.me/addlist link."
 
         cl = get_client(account)
@@ -1176,7 +1193,9 @@ async def get_chatlist_invite(link: str, account: Optional[str] = None) -> str:
         slug_error = f"{type(e).__name__} {getattr(e, 'message', '')}".upper().replace("_", "")
         if "INVITESLUG" in slug_error:
             if "EXPIRED" in slug_error:
+                record_tool_error("not_found")
                 return "Error: the shared folder invite has expired or was revoked."
+            record_tool_error("invalid_argument")
             return "Error: the shared folder invite slug is invalid or empty."
         return log_and_format_error("get_chatlist_invite", e, ErrorCategory.FOLDER, link=link)
 

@@ -233,6 +233,7 @@ async def subscribe_public_channel(channel: Union[int, str], account: Optional[s
         )
         return f"Already subscribed to {title}."
     except telethon.errors.rpcerrorlist.ChannelPrivateError:
+        record_tool_error("private")
         return "Cannot subscribe: this channel is private or requires an invite link."
     except Exception as e:
         return log_and_format_error("subscribe_public_channel", e, channel=channel)
@@ -1019,6 +1020,7 @@ async def resolve_username(username: str, account: Optional[str] = None) -> str:
     try:
         clean_user = normalize_username(username)
         if not clean_user:
+            record_tool_error("invalid_argument")
             return "Invalid username: must be a non-empty alphanumeric username."
 
         cl = get_client(account)
@@ -1056,6 +1058,9 @@ async def resolve_username(username: str, account: Optional[str] = None) -> str:
 
         return json.dumps(entity_info, indent=2, ensure_ascii=False)
     except Exception as e:
+        # The arguments below are historically swapped (kept so the text is unchanged);
+        # record the real classification here.
+        record_tool_error(**classify_error(e))
         return log_and_format_error("normalize_username", "resolve_username", e, username=username)
 
 
@@ -1359,16 +1364,19 @@ async def get_message_read_by(
                 f"{chat_id}: message is too old or read receipts are disabled."
             )
         except ChatAdminRequiredError:
+            record_tool_error("private")
             return (
                 f"Cannot read receipts for message {message_id} in chat {chat_id}: "
                 f"admin rights are required."
             )
         except UserNotParticipantError:
+            record_tool_error("private")
             return (
                 f"Cannot read receipts for message {message_id} in chat {chat_id}: "
                 f"you are not a participant of this chat."
             )
         except PeerIdInvalidError:
+            record_tool_error("invalid_argument")
             return f"Invalid chat: {chat_id}."
 
         # result is a list of ReadParticipantDate objects in newer Telethon,
@@ -1447,6 +1455,7 @@ async def get_message_link(
         link = getattr(result, "link", None)
         html = getattr(result, "html", None)
         if not link:
+            record_tool_error("internal")
             return f"Could not export link for message {message_id} in chat {chat_id}."
 
         output = f"Link: {link}"

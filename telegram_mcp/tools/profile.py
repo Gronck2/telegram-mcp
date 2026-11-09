@@ -161,6 +161,7 @@ async def get_privacy_settings(account: Optional[str] = None) -> str:
             return _privacy_settings_text(settings)
         except TypeError as e:
             if "TLObject was expected" in str(e):
+                record_tool_error("internal")
                 return (
                     "Error: Privacy settings API call failed due to type mismatch. "
                     "This is likely a version compatibility issue with Telethon."
@@ -251,11 +252,13 @@ async def set_privacy_settings(
             "profile_photo": types.InputPrivacyKeyProfilePhoto,
         }
         if key not in key_mapping:
+            record_tool_error("invalid_argument")
             return (
                 f"Error: Unsupported privacy key '{key}'. "
                 f"Supported keys: {', '.join(key_mapping.keys())}"
             )
         if not allow_users and not disallow_users:
+            record_tool_error("invalid_argument")
             return (
                 "Error: Pass allow_users and/or disallow_users. This tool only adds "
                 "exceptions; the main choice is changed in the Telegram app."
@@ -282,6 +285,7 @@ async def set_privacy_settings(
         allow = await input_users(allow_users)
         disallow = await input_users(disallow_users)
         if allow is None or disallow is None:
+            record_tool_error("not_found")
             return "Error: Could not find a requested user; privacy settings were not changed."
 
         current = await cl(functions.account.GetPrivacyRequest(key=privacy_key))
@@ -514,6 +518,7 @@ async def set_bot_commands(
         # First check if the current client is a bot
         me = await cl.get_me()
         if not getattr(me, "bot", False):
+            record_tool_error("private")
             return (
                 "Error: This function can only be used by bot accounts. "
                 "Your current Telegram account is a regular user account, not a bot."

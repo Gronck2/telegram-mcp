@@ -108,7 +108,11 @@ Errors are recorded where they are created, never inferred from result text.
 constant Telegram error names only) and appends the result to a per-call
 recorder (`ContextVar` holding a shared list, so `wait_for` and the fan-out
 `gather` tasks all write to it). `with_account` and the few bare-string
-refusals in tools record explicitly with `record_tool_error`. The call hook in
+refusals in tools (about 120 early returns such as "Error: ..." / "Cannot ...") record
+explicitly with `record_tool_error`; empty results, idempotent no-ops, per-item
+errors and `export_message_link`'s entity-type refusal stay plain successes (known gap).
+Unknown RPC errors fall back by base class (400 invalid_argument, 403 private,
+FloodError flood, else internal). The call hook in
 `_install_annotation_hook` applies the record to the wire result.
 
 With `TELEGRAM_STRUCTURED_ERRORS=1` a failed call gets `isError: true` and

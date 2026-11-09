@@ -31,6 +31,19 @@ every consumer of the live deployment.
   marks the ask-the-user alias prompt (kind `invalid_argument`). `_meta`
   carries only these fixed names, ints and account labels: no peer identifiers,
   Telegram content or caller-supplied strings.
+- **RPC fallback and coverage (round 1):** RPC errors outside the curated
+  not_found/private/flood sets fall back by Telethon base class: any
+  `FloodError` is `flood` (with `retry_after` when `seconds` is set),
+  `BadRequestError` is `invalid_argument`, `ForbiddenError` is `private`,
+  anything else `internal`; `rpc_error` keeps the constant name, capped at 64
+  characters. FastMCP-made errors with nothing recorded are `invalid_argument`.
+  Early-return refusals in tools call `record_tool_error` with a kind chosen by
+  meaning. Known gap, left as plain successes on purpose: empty results,
+  idempotent no-ops ("already ..."), per-item errors in a successful payload,
+  and `export_message_link` for non-channel entities. Two call sites pass
+  `log_and_format_error` arguments in the wrong order (`resolve_username`,
+  `export_unread_messages`); their text is kept and they record the
+  classification explicitly.
 - **Fan-out:** a read-only tool run over all accounts is `isError` only if
   every account failed; `accounts` lists each failing account's details either
   way.

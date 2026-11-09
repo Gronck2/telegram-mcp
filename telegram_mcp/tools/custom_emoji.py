@@ -17,6 +17,7 @@ from telegram_mcp.runtime import (
     json_serializer,
     log_and_format_error,
     mcp,
+    record_tool_error,
     with_account,
 )
 
@@ -138,6 +139,7 @@ async def get_custom_emoji_pack(
     try:
         short_name = extract_pack_short_name(pack)
         if not short_name:
+            record_tool_error("invalid_argument")
             return "Invalid pack name or URL provided."
 
         cl = get_client(account)
@@ -265,6 +267,7 @@ async def preview_custom_emoji(
             if doc_id <= 0:
                 raise ValueError()
         except (ValueError, TypeError):
+            record_tool_error("invalid_argument")
             return "Invalid document_id: must be a positive integer."
 
         cl = get_client(account)
@@ -286,6 +289,7 @@ async def preview_custom_emoji(
             data = await cl.download_media(doc, file=bytes)
 
         if not data:
+            record_tool_error("internal")
             return f"Failed to download media for custom emoji {doc_id}."
 
         ext = ".webp"
