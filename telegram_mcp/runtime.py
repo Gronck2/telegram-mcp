@@ -1230,9 +1230,10 @@ def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional
     Accepted: numeric marked ids, phone numbers (kept as before: Telethon looks
     them up by phone; stored canonically as ``+<digits>``), ``*`` and usernames
     (``name``, ``@name``, any case, ``t.me/name`` forms; stored as the
-    lower-cased username that Telethon's ``parse_username`` extracts). Anything else (free text, invite links, malformed
-    handles such as ``1abcd/``) becomes the inert sentinel with a warning: a string
-    entry could only be matched by a caller string that Telethon then resolves by chat
+    lower-cased username that Telethon's ``parse_username`` extracts).
+    Anything else (free text, invite links, malformed handles such as
+    ``1abcd/``) becomes the inert sentinel with a warning: a string entry could
+    only be matched by a caller string that Telethon then resolves by chat
     title. ``@*`` is inert as well.
     """
     if token == CHAT_ALLOWLIST_WILDCARD:
