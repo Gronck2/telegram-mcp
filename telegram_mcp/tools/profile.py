@@ -161,6 +161,7 @@ async def get_privacy_settings(account: Optional[str] = None) -> str:
             return _privacy_settings_text(settings)
         except TypeError as e:
             if "TLObject was expected" in str(e):
+                record_tool_error("internal")
                 return (
                     "Error: Privacy settings API call failed due to type mismatch. "
                     "This is likely a version compatibility issue with Telethon."
@@ -171,7 +172,7 @@ async def get_privacy_settings(account: Optional[str] = None) -> str:
         return log_and_format_error("get_privacy_settings", e)
 
 
-class _PrivacyRefusal(ValueError):
+class _PrivacyRefusal(ValidationError):
     """A deliberate refusal; its message is static text that is safe to show to the agent."""
 
 
@@ -251,26 +252,38 @@ async def set_privacy_settings(
             "profile_photo": types.InputPrivacyKeyProfilePhoto,
         }
         if key not in key_mapping:
+            record_tool_error("invalid_argument")
             return (
                 f"Error: Unsupported privacy key '{key}'. "
                 f"Supported keys: {', '.join(key_mapping.keys())}"
             )
         if not allow_users and not disallow_users:
+            record_tool_error("invalid_argument")
             return (
                 "Error: Pass allow_users and/or disallow_users. This tool only adds "
                 "exceptions; the main choice is changed in the Telegram app."
             )
         privacy_key = key_mapping[key]()
 
+        failure_recorded = []
+
+        def record_first_failure(**fields):
+            # The first failure stays authoritative (single-account _meta takes the last entry).
+            if not failure_recorded:
+                failure_recorded.append(True)
+                record_tool_error(**fields)
+
         async def input_users(identifiers):
             users = []
             for identifier in identifiers or []:
                 try:
                     user = await resolve_entity(identifier, cl)
-                except Exception:
+                except Exception as resolve_err:
                     logger.warning("Could not resolve a requested privacy-rule user")
+                    record_first_failure(**classify_error(resolve_err))
                     return None
                 if not isinstance(user, User):
+                    record_first_failure(kind="not_found")
                     return None
                 if user.is_self:
                     # utils.get_input_user would give InputUserSelf, which has no user_id,
@@ -460,6 +473,7 @@ async def get_bot_info(bot_username: str, account: Optional[str] = None) -> str:
         cl = get_client(account)
         entity = await resolve_entity(bot_username, cl)
         if not entity:
+            record_tool_error("not_found")
             return f"Bot with username {bot_username} not found."
         if not peer_allowed(entity, identifier=bot_username):
             # Description and commands count as bio-like: public fields only.
@@ -514,6 +528,7 @@ async def set_bot_commands(
         # First check if the current client is a bot
         me = await cl.get_me()
         if not getattr(me, "bot", False):
+            record_tool_error("invalid_argument")
             return (
                 "Error: This function can only be used by bot accounts. "
                 "Your current Telegram account is a regular user account, not a bot."

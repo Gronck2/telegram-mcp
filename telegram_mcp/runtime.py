@@ -18,6 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 from contextlib import contextmanager
+from contextvars import ContextVar
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -36,6 +37,7 @@ from mcp.shared.exceptions import McpError
 from pythonjsonlogger.json import JsonFormatter
 from telethon import TelegramClient, functions, types, utils
 from telethon.errors import AuthKeyDuplicatedError, FloodWaitError, BotMethodInvalidError, RPCError
+from telethon.errors.rpcbaseerrors import BadRequestError, FloodError, ForbiddenError
 from telethon.errors.rpcerrorlist import rpc_errors_dict
 from telethon.sessions import StringSession
 from telethon.tl.types import (
@@ -213,6 +215,111 @@ def _tool_timeout_seconds(value: Optional[str] = None) -> Optional[float]:
     return timeout if timeout > 0 else None
 
 
+# --- Structured tool errors (opt-in, ADR 0003) -------------------------------------
+# Errors are recorded where they are created (never inferred from result text) in a
+# per-call recorder; the call hook turns the record into ``isError`` and ``_meta``.
+STRUCTURED_ERRORS_META_KEY = "telegram-mcp/error"
+
+
+def structured_errors_enabled() -> bool:
+    """True when ``TELEGRAM_STRUCTURED_ERRORS`` is set to a truthy value."""
+    raw = os.getenv("TELEGRAM_STRUCTURED_ERRORS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+class _ErrorRecorder:
+    """Errors recorded during one tool call; shared by every task of that call."""
+
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+        self.fanout: Optional[list[str]] = None
+
+
+_error_recorder: ContextVar[Optional[_ErrorRecorder]] = ContextVar(
+    "telegram_mcp_error_recorder", default=None
+)
+_error_account: ContextVar[Optional[str]] = ContextVar("telegram_mcp_error_account", default=None)
+
+
+def mark_last_error_needs_user() -> None:
+    """Flag the most recent recorded error as an ask-the-user instruction."""
+    recorder = _error_recorder.get()
+    if recorder is not None and recorder.entries:
+        recorder.entries[-1]["needs_user"] = True
+
+
+def record_tool_error(kind: str, **fields: Any) -> None:
+    """Record that the running tool call failed with ``kind`` (no-op when disabled)."""
+    recorder = _error_recorder.get()
+    if recorder is None:
+        return
+    entry = {"kind": kind, **{k: v for k, v in fields.items() if v not in (None, False)}}
+    account = _error_account.get()
+    if account is not None:
+        entry["account"] = account
+    recorder.entries.append(entry)
+
+
+def _error_meta(recorder: _ErrorRecorder, timed_out: bool) -> tuple[dict, bool]:
+    """Build the ``_meta`` error object and whether the call failed overall."""
+    entries = [{"kind": "timeout"}] if timed_out else recorder.entries
+    if not entries:
+        entries = [{"kind": "invalid_argument"}]
+    plain = [{k: v for k, v in e.items() if k != "account"} for e in entries]
+    if not recorder.fanout:
+        return dict(plain[-1]), True
+    by_account = {e["account"]: e for e in entries if "account" in e}
+    failed_all = set(recorder.fanout) <= set(by_account)
+    if all(p == plain[0] for p in plain):
+        meta = dict(plain[0])
+    else:
+        kinds = {p["kind"] for p in plain}
+        meta = {"kind": kinds.pop() if len(kinds) == 1 else "internal"}
+    if by_account:
+        meta["accounts"] = [by_account[label] for label in sorted(by_account)]
+    return meta, failed_all
+
+
+def _apply_structured_error(result, recorder: _ErrorRecorder, timed_out: bool) -> None:
+    """Mark a CallToolResult as failed and attach the machine-readable error."""
+    if not (recorder.entries or timed_out or result.isError):
+        return
+    meta, failed = _error_meta(recorder, timed_out)
+    result.meta = {**(result.meta or {}), STRUCTURED_ERRORS_META_KEY: meta}
+    if failed:
+        result.isError = True
+
+
+def _install_unrecorded_failure_hook() -> None:
+    """Classify a tool failure that nothing recorded (structured errors only).
+
+    A ToolError that no ``record_tool_error`` call preceded is either FastMCP rejecting
+    the call (unknown tool, arguments failing schema validation: ``invalid_argument``)
+    or a failure that skipped ``log_and_format_error`` (an escaped exception or a raw
+    ToolError: classified from the underlying cause, ``internal`` when generic). The
+    behaviour is identical for single-account and fan-out calls.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    manager = mcp._tool_manager
+    original_call_tool = manager.call_tool
+
+    async def call_tool(name, *args, **kwargs):
+        try:
+            return await original_call_tool(name, *args, **kwargs)
+        except ToolError as exc:
+            recorder = _error_recorder.get()
+            if recorder is not None and not recorder.entries:
+                cause = exc.__cause__
+                if manager.get_tool(name) is None or isinstance(cause, PydanticValidationError):
+                    record_tool_error("invalid_argument")
+                else:
+                    record_tool_error(**classify_error(cause or exc))
+            raise
+
+    manager.call_tool = call_tool
+
+
 def _install_annotation_hook() -> None:
     from mcp.types import CallToolRequest, ServerResult, CallToolResult
 
@@ -220,30 +327,39 @@ def _install_annotation_hook() -> None:
 
     async def annotated_handler(req):
         timeout = _tool_timeout_seconds()
-        if timeout is None:
-            response = await original_handler(req)
-        else:
-            try:
-                response = await asyncio.wait_for(original_handler(req), timeout=timeout)
-            except asyncio.TimeoutError:
-                response = ServerResult(
-                    CallToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=(
-                                    "Telegram MCP tool timed out after "
-                                    f"{timeout:g}s (code: GEN-TIMEOUT). "
-                                    "Completion is unknown; a write may already have "
-                                    "succeeded. Check destination state before retrying "
-                                    "non-idempotent operations."
-                                ),
-                            )
-                        ],
-                        isError=True,
+        recorder = _ErrorRecorder() if structured_errors_enabled() else None
+        token = _error_recorder.set(recorder)
+        timed_out = False
+        try:
+            if timeout is None:
+                response = await original_handler(req)
+            else:
+                try:
+                    response = await asyncio.wait_for(original_handler(req), timeout=timeout)
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    response = ServerResult(
+                        CallToolResult(
+                            content=[
+                                TextContent(
+                                    type="text",
+                                    text=(
+                                        "Telegram MCP tool timed out after "
+                                        f"{timeout:g}s (code: GEN-TIMEOUT). "
+                                        "Completion is unknown; a write may already have "
+                                        "succeeded. Check destination state before retrying "
+                                        "non-idempotent operations."
+                                    ),
+                                )
+                            ],
+                            isError=True,
+                        )
                     )
-                )
+        finally:
+            _error_recorder.reset(token)
         if isinstance(response, ServerResult) and isinstance(response.root, CallToolResult):
+            if recorder is not None:
+                _apply_structured_error(response.root, recorder, timed_out)
             content = response.root.content
             if content:
                 response.root.content = [
@@ -261,6 +377,7 @@ def _install_annotation_hook() -> None:
 
 
 _install_annotation_hook()
+_install_unrecorded_failure_hook()
 
 
 _EXPOSED_TOOLS_MODES = {"all", "read-only"}
@@ -886,7 +1003,7 @@ def get_client(account: str = None) -> TelegramClient:
         raise ValueError(f"Account is required. Available accounts: {', '.join(clients.keys())}")
     label = canonical_account_label(account)
     if label not in clients:
-        raise ValueError(
+        raise InvalidReferenceError(
             f"Unknown account '{account}'. Available accounts: {', '.join(clients.keys())}"
         )
     return clients[label]
@@ -924,18 +1041,37 @@ def with_account(readonly=False):
             # account is None AND multi-mode
             if not readonly:
                 labels = ", ".join(clients.keys())
+                record_tool_error("invalid_argument")
                 return f"Error: 'account' is required. Available accounts: {labels}"
 
             # Read-only fan-out to all accounts concurrently
+            recorder = _error_recorder.get()
+            if recorder is not None:
+                recorder.fanout = list(clients)
+
             async def _call_for(label):
                 kw = dict(kwargs)
                 kw["account"] = label
+                _error_account.set(label)  # this task has its own context copy
                 try:
                     result = await fn(*args, **kw)
                     failed = False
                 except ToolError as error:
                     result = str(error)
                     failed = True
+                    if recorder is not None and not any(
+                        e.get("account") == label for e in recorder.entries
+                    ):
+                        record_tool_error("internal")
+                except Exception as error:
+                    # Unclassified failure on this account: record its cause before the
+                    # error propagates (fail-fast, as before); accounts still running
+                    # are not listed in _meta.
+                    if recorder is not None and not any(
+                        e.get("account") == label for e in recorder.entries
+                    ):
+                        record_tool_error(**classify_error(error))
+                    raise
                 return label, result, failed
 
             results = await asyncio.gather(*(_call_for(label) for label in clients))
@@ -1758,6 +1894,14 @@ class ChatAccessDeniedError(Exception):
     pass
 
 
+class EntityNotFoundError(ValueError):
+    """A peer reference could not be resolved (structured kind ``not_found``)."""
+
+
+class InvalidReferenceError(ValueError):
+    """A peer reference is malformed or out of range (kind ``invalid_argument``)."""
+
+
 def _is_flood_wait(error: Exception) -> bool:
     """True for Telethon FloodWaitError."""
     try:
@@ -1784,9 +1928,98 @@ def _telegram_error_name(error: RPCError) -> Optional[str]:
     name = _RPC_ERROR_NAMES.get(type(error))
     if name is None and type(error).__module__ == "telethon.errors.rpcbaseerrors":
         name = error.message
-    if isinstance(name, str) and _TELEGRAM_ERROR_NAME_RE.fullmatch(name):
+    if isinstance(name, str) and len(name) <= 64 and _TELEGRAM_ERROR_NAME_RE.fullmatch(name):
         return name
     return None
+
+
+_NOT_FOUND_RPC = frozenset(
+    {
+        "PEER_ID_INVALID",
+        "USERNAME_NOT_OCCUPIED",
+        "USERNAME_INVALID",
+        "CHAT_ID_INVALID",
+        "MSG_ID_INVALID",
+        "MESSAGE_ID_INVALID",
+        "INVITE_HASH_EMPTY",
+        "INVITE_HASH_EXPIRED",
+        "INVITE_HASH_INVALID",
+        "USER_ID_INVALID",
+        "CHANNEL_INVALID",
+    }
+)
+_PRIVATE_RPC = frozenset(
+    {
+        "CHANNEL_PRIVATE",
+        "CHAT_FORBIDDEN",
+        "USER_NOT_PARTICIPANT",
+        "CHANNEL_BANNED",
+        "USER_BANNED_IN_CHANNEL",
+        "CHAT_WRITE_FORBIDDEN",
+        "CHAT_ADMIN_REQUIRED",
+        "USER_PRIVACY_RESTRICTED",
+        "USER_NOT_MUTUAL_CONTACT",
+        "USER_IS_BLOCKED",  # they blocked us: no access to that user
+        "ChannelPrivateError",
+        "ChatForbiddenError",
+        "UserNotParticipantError",
+        "ChannelBannedError",
+        "UserBannedInChannelError",
+        "ChatWriteForbiddenError",
+        "ChatAdminRequiredError",
+        "UserPrivacyRestrictedError",
+        "UserNotMutualContactError",
+        "UserIsBlockedError",
+    }
+)
+_FLOOD_RPC = frozenset({"PEER_FLOOD", "PeerFloodError", "SlowModeWaitError"})
+
+
+def classify_error(error: BaseException, prefix: Any = None) -> dict:
+    """Map an exception (and formatter prefix) to the structured error fields.
+
+    Pure and text-free: only exception types and constant Telegram error names are
+    used, so the result holds nothing a caller or a chat can influence.
+    """
+    if isinstance(error, AliasNeedsUser):
+        return {"kind": "invalid_argument", "needs_user": True}
+    if isinstance(error, (ValidationError, InvalidReferenceError)) or prefix == "VALIDATION-001":
+        return {"kind": "invalid_argument"}
+    if isinstance(error, ChatAccessDeniedError) or prefix == ErrorCategory.PRIVACY:
+        return {"kind": "forbidden_allowlist"}
+    if isinstance(error, EntityNotFoundError):
+        return {"kind": "not_found"}
+    if _is_flood_wait(error):
+        seconds = getattr(error, "seconds", None)
+        info: dict = {"kind": "flood"}
+        if isinstance(seconds, int) and seconds > 0:
+            info["retry_after"] = seconds
+        return info
+    if _is_schema_drift(error) or not isinstance(error, RPCError):
+        return {"kind": "internal"}
+    return _classify_rpc(error)
+
+
+def _classify_rpc(error: RPCError) -> dict:
+    name = _telegram_error_name(error)
+    keys = {name, type(error).__name__}
+    info: dict = {"rpc_error": name or type(error).__name__}
+    if keys & _FLOOD_RPC or isinstance(error, FloodError):
+        info["kind"] = "flood"
+        seconds = getattr(error, "seconds", None)
+        if isinstance(seconds, int) and seconds > 0:
+            info["retry_after"] = seconds
+    elif keys & _NOT_FOUND_RPC:
+        info["kind"] = "not_found"
+    elif keys & _PRIVATE_RPC:
+        info["kind"] = "private"
+    elif isinstance(error, BadRequestError):
+        info["kind"] = "invalid_argument"
+    elif isinstance(error, ForbiddenError):
+        info["kind"] = "private"
+    else:
+        info["kind"] = "internal"
+    return {"kind": info.pop("kind"), **info}
 
 
 def log_and_format_error(
@@ -1812,6 +2045,11 @@ def log_and_format_error(
     Returns:
         A user-friendly error message with an error code.
     """
+    if isinstance(error, BaseException):
+        # Call sites that pass the arguments in the wrong order record the real
+        # classification themselves (see tools/chats.py resolve_username).
+        record_tool_error(**classify_error(error, prefix))
+
     # An ask-the-user instruction is normal control flow, not a failure: return it
     # verbatim and never log the user's nickname at ERROR level.
     if isinstance(error, AliasNeedsUser):
@@ -1961,7 +2199,7 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                                 return value, None
                             # Unknown or ambiguous reference: hand the agent an
                             # instruction to ask the user instead of a dead end.
-                            return None, alias_ask_payload(value)
+                            return None, _AskPayload(alias_ask_payload(value))
 
                     # Handle other invalid types
                     return (
@@ -1974,29 +2212,31 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                     for item in param_value:
                         validated_item, error_msg = validate_single_id(item, param_name)
                         if error_msg:
-                            return error_result(
-                                log_and_format_error(
-                                    func.__name__,
-                                    ValidationError(error_msg),
-                                    prefix="VALIDATION-001",
-                                    user_message=error_msg,
-                                    **{param_name: param_value},
-                                )
-                            )
-                        validated_list.append(validated_item)
-                    kwargs[param_name] = validated_list
-                else:
-                    validated_value, error_msg = validate_single_id(param_value, param_name)
-                    if error_msg:
-                        return error_result(
-                            log_and_format_error(
+                            formatted = log_and_format_error(
                                 func.__name__,
                                 ValidationError(error_msg),
                                 prefix="VALIDATION-001",
                                 user_message=error_msg,
                                 **{param_name: param_value},
                             )
+                            if isinstance(error_msg, _AskPayload):
+                                mark_last_error_needs_user()
+                            return error_result(formatted)
+                        validated_list.append(validated_item)
+                    kwargs[param_name] = validated_list
+                else:
+                    validated_value, error_msg = validate_single_id(param_value, param_name)
+                    if error_msg:
+                        formatted = log_and_format_error(
+                            func.__name__,
+                            ValidationError(error_msg),
+                            prefix="VALIDATION-001",
+                            user_message=error_msg,
+                            **{param_name: param_value},
                         )
+                        if isinstance(error_msg, _AskPayload):
+                            mark_last_error_needs_user()
+                        return error_result(formatted)
                     kwargs[param_name] = validated_value
 
                 # Per-chat privacy allowlist enforcement
@@ -2538,6 +2778,10 @@ _PEER_ERRORS = (
 )
 
 
+class _AskPayload(str):
+    """Marks a validate_id error message that is an ask-the-user instruction."""
+
+
 class AliasNeedsUser(Exception):
     """Carries an agent-facing instruction to ask the human which contact is meant.
 
@@ -2752,7 +2996,7 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
     for user in getattr(found, "users", None) or []:
         if getattr(user, "phone", None) == phone:
             return user if as_entity else utils.get_input_peer(user)
-    raise ValueError(
+    raise EntityNotFoundError(
         f"{identifier!r} is not in the contacts or the phone cache; a phone is never "
         "matched by display name."
     )
@@ -2881,7 +3125,7 @@ async def _resolve_with_retries(
             except ValueError as error:
                 last_error = error
 
-    raise ValueError(
+    raise EntityNotFoundError(
         f"Could not resolve {label} for {identifier!r}, "
         f"including marked variants {_marked_id_candidates(identifier)}"
     ) from last_error
@@ -2901,7 +3145,7 @@ def _digit_string_to_id(identifier: Union[int, str]) -> Union[int, str]:
     except ValueError:
         value = None
     if value is None or not (-(2**63) <= value <= 2**63 - 1):
-        raise ValueError("The id is out of the valid id range.")
+        raise InvalidReferenceError("The id is out of the valid id range.")
     return value
 
 
@@ -2921,7 +3165,7 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
         from_alias = identifier is not original
         if is_chat_allowlist_enabled() and isinstance(identifier, str):
             if _is_malformed_handle(identifier):
-                raise ValueError(
+                raise InvalidReferenceError(
                     f"{identifier!r} is not a username or an id; chat access is restricted "
                     "by an allowlist, so display names cannot be used."
                 )
@@ -3307,6 +3551,15 @@ async def _get_effective_allowed_roots_with_status(
     return [], ROOTS_STATUS_CLIENT_DENY_ALL
 
 
+def _path_refusal(message: str) -> str:
+    """Record a file-path security refusal (structured kind ``invalid_argument``).
+
+    Every caller returns the refusal text as the whole tool result straight away.
+    """
+    record_tool_error("invalid_argument")
+    return message
+
+
 async def _ensure_allowed_roots(
     ctx: Optional[Context], tool_name: str
 ) -> tuple[List[Path], Optional[str]]:
@@ -3315,7 +3568,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_CLIENT_DENY_ALL:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because the client provided an empty "
                     "MCP Roots list (deny-all)."
                 ),
@@ -3323,7 +3576,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_ERROR:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because MCP Roots could not be verified safely. "
                     "Check MCP client/server logs."
                 ),
@@ -3331,7 +3584,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_TIMEOUT:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because the MCP client never answered the "
                     "roots/list request. Configure server CLI roots and set "
                     "TELEGRAM_SERVER_ROOTS_ONLY=1 (skip roots/list) or "
@@ -3341,7 +3594,7 @@ async def _ensure_allowed_roots(
             )
         return (
             [],
-            (
+            _path_refusal(
                 f"{tool_name} is disabled until allowed roots are configured. "
                 "Provide server CLI roots and/or client MCP Roots."
             ),
@@ -3361,7 +3614,7 @@ async def _resolve_readable_file_path(
 
     pattern_error = _contains_forbidden_path_patterns(raw_path)
     if pattern_error:
-        return None, pattern_error
+        return None, _path_refusal(pattern_error)
 
     candidate = Path(raw_path.strip())
     if not candidate.is_absolute():
@@ -3370,22 +3623,22 @@ async def _resolve_readable_file_path(
     try:
         candidate = candidate.resolve(strict=True)
     except FileNotFoundError:
-        return None, f"File not found: {raw_path}"
+        return None, _path_refusal(f"File not found: {raw_path}")
 
     if not _path_is_within_any_root(candidate, roots):
-        return None, "Path is outside allowed roots."
+        return None, _path_refusal("Path is outside allowed roots.")
     if not candidate.is_file():
-        return None, f"Path is not a file: {candidate}"
+        return None, _path_refusal(f"Path is not a file: {candidate}")
     if not os.access(candidate, os.R_OK):
-        return None, f"File is not readable: {candidate}"
+        return None, _path_refusal(f"File is not readable: {candidate}")
 
     extension_error = _ensure_extension_allowed(tool_name, candidate)
     if extension_error:
-        return None, extension_error
+        return None, _path_refusal(extension_error)
 
     size_error = _ensure_size_within_limit(tool_name, candidate)
     if size_error:
-        return None, size_error
+        return None, _path_refusal(size_error)
 
     return candidate, None
 
@@ -3404,7 +3657,7 @@ async def _resolve_writable_file_path(
     if raw_path and raw_path.strip():
         pattern_error = _contains_forbidden_path_patterns(raw_path)
         if pattern_error:
-            return None, pattern_error
+            return None, _path_refusal(pattern_error)
         candidate = Path(raw_path.strip())
         if not candidate.is_absolute():
             candidate = _first_resolution_root(roots) / candidate
@@ -3425,15 +3678,15 @@ async def _resolve_writable_file_path(
     if not _path_is_within_any_root(candidate, roots) or not _path_is_within_any_root(
         parent, roots
     ):
-        return None, "Path is outside allowed roots."
+        return None, _path_refusal("Path is outside allowed roots.")
 
     extension_error = _ensure_extension_allowed(tool_name, candidate)
     if extension_error:
-        return None, extension_error
+        return None, _path_refusal(extension_error)
 
     parent.mkdir(parents=True, exist_ok=True)
     if not os.access(parent, os.W_OK):
-        return None, f"Directory not writable: {parent}"
+        return None, _path_refusal(f"Directory not writable: {parent}")
 
     return candidate, None
 

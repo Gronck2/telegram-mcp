@@ -287,10 +287,12 @@ async def send_file(
         if schedule_date is not None:
             dt, schedule_error = parse_schedule_date(schedule_date)
             if schedule_error:
+                record_tool_error("invalid_argument")
                 return schedule_error
 
         caption_kwargs, caption_error = _caption_format_kwargs(caption, parse_mode, custom_emojis)
         if caption_error:
+            record_tool_error("invalid_argument")
             return caption_error
 
         cl = get_client(account)
@@ -347,16 +349,19 @@ async def _send_album(
     account: str = None,
 ) -> str:
     if not 2 <= len(file_paths) <= 10:
+        record_tool_error("invalid_argument")
         return "Albums must contain between 2 and 10 files."
 
     dt = None
     if schedule_date is not None:
         dt, schedule_error = parse_schedule_date(schedule_date)
         if schedule_error:
+            record_tool_error("invalid_argument")
             return schedule_error
 
     caption_kwargs, caption_error = _caption_format_kwargs(caption, parse_mode, custom_emojis)
     if caption_error:
+        record_tool_error("invalid_argument")
         return caption_error
 
     cl = get_client(account)
@@ -468,6 +473,7 @@ async def send_album(
     """
     try:
         if not isinstance(file_paths, list):
+            record_tool_error("invalid_argument")
             return "file_paths must be a list of file paths."
         return await _send_album(
             chat_id=chat_id,
@@ -528,6 +534,7 @@ async def download_media(
         entity = await resolve_entity(chat_id, cl)
         msg = await cl.get_messages(entity, ids=message_id)
         if not msg:
+            record_tool_error("not_found")
             return "No media found in the specified message."
 
         # Block-format posts keep their embedded photos/videos as ids resolved
@@ -538,11 +545,14 @@ async def download_media(
             if media_id is not None:
                 pool = [m for m in pool if str(m["id"]) == str(media_id).strip()]
                 if not pool:
+                    record_tool_error("not_found")
                     return f"No rich media with id {media_id} in message {message_id}."
             if not pool:
+                record_tool_error("not_found")
                 return "No media found in the specified message."
             target = pool[0]["media"]
         elif media_id is not None:
+            record_tool_error("invalid_argument")
             return (
                 f"media_id picks among a rich post's embedded media; message {message_id} "
                 "carries regular media — download it without media_id."
@@ -551,6 +561,7 @@ async def download_media(
         limit = MAX_FILE_BYTES["download_media"]
         declared_size = _known_media_size(target)
         if declared_size is not None and declared_size > limit:
+            record_tool_error("invalid_argument")
             return f"Media is too large for download_media (limit: {limit} bytes)."
 
         default_name = f"telegram_{chat_id}_{message_id}_{int(time.time())}_{uuid4().hex}"
@@ -581,15 +592,19 @@ async def download_media(
                     progress_callback=enforce_download_limit,
                 )
             except _DownloadLimitExceeded:
+                record_tool_error("invalid_argument")
                 return f"Media is too large for download_media (limit: {limit} bytes)."
 
             if not downloaded:
+                record_tool_error("internal")
                 return f"Download failed for message {message_id}."
 
             temp_final_path = Path(downloaded).resolve(strict=True)
             if temp_final_path.parent != temp_dir.resolve():
+                record_tool_error("internal")
                 return "Download failed: resulting temporary path is invalid."
             if temp_final_path.stat().st_size > limit:
+                record_tool_error("invalid_argument")
                 return f"Media is too large for download_media (limit: {limit} bytes)."
 
             final_path = out_path
@@ -664,6 +679,7 @@ async def send_voice(
                 or str(safe_path).lower().endswith(".opus")
             )
         ):
+            record_tool_error("invalid_argument")
             return "Voice file must be .ogg or .opus format."
 
         entity = await resolve_entity(chat_id, cl)
@@ -732,6 +748,7 @@ async def get_media_info(
         msg = await cl.get_messages(entity, ids=message_id)
 
         if not msg:
+            record_tool_error("not_found")
             return "No media found in the specified message."
         if msg.media:
             return str(msg.media)
@@ -739,6 +756,7 @@ async def get_media_info(
         # rich_message.photos/documents — report the resolved objects.
         rich = [m["media"] for m in rich_message_media(msg) if m["media"] is not None]
         if not rich:
+            record_tool_error("not_found")
             return "No media found in the specified message."
         return "\n".join(str(m) for m in rich)
     except Exception as e:
@@ -883,6 +901,7 @@ async def send_gif(
     try:
         cl = get_client(account)
         if not isinstance(gif_id, int):
+            record_tool_error("invalid_argument")
             return (
                 "gif_id must be a Telegram document ID (integer), not a file "
                 "path. Use get_gif_search to find IDs."
@@ -890,6 +909,7 @@ async def send_gif(
         entity = await resolve_entity(chat_id, cl)
         gif = await _find_gif(cl, account, gif_id)
         if gif is None:
+            record_tool_error("not_found")
             return (
                 f"GIF {gif_id} is unknown to this session. Run get_gif_search "
                 "first and use an ID from its result."
@@ -930,6 +950,7 @@ async def list_photos(
     try:
         resolved_source = validate_source(source)
     except UnknownPhotoSource:
+        record_tool_error("invalid_argument")
         return "Unknown photo source. Expected one of: avatars, messages."
 
     try:
@@ -992,12 +1013,14 @@ async def open_photo(
             cl, entity, wanted_source, wanted_identifier, PHOTO_IDENTIFIER_SEARCH_DEPTH
         )
         if reference is None:
+            record_tool_error("not_found")
             return f"No {wanted_source} photo found for chat {chat_id}" + (
                 f" with id {wanted_identifier}." if wanted_identifier else "."
             )
 
         photo_bytes = await download_photo_bytes(cl, reference)
         if not photo_bytes:
+            record_tool_error("internal")
             return f"Download failed for photo {reference.identifier}."
 
         if save_path:
@@ -1049,6 +1072,7 @@ async def get_photo_sheet(
     try:
         resolved_source = validate_source(source)
     except UnknownPhotoSource:
+        record_tool_error("invalid_argument")
         return "Unknown photo source. Expected one of: avatars, messages."
 
     try:
@@ -1066,11 +1090,13 @@ async def get_photo_sheet(
             if thumbnail_bytes:
                 tiles.append((thumbnail_bytes, str(reference.identifier)))
         if not tiles:
+            record_tool_error("internal")
             return f"No {resolved_source} photos could be downloaded for chat {chat_id}."
 
         try:
             sheet_bytes = build_contact_sheet(tiles, columns)
         except ContactSheetUnavailable:
+            record_tool_error("internal")
             return (
                 "Pillow is required to build contact sheets. Install it with "
                 "`pip install pillow` or `uv sync`."
@@ -1145,6 +1171,7 @@ async def inspect_document(
         msg = await cl.get_messages(entity, ids=message_id)
 
         if not msg or not msg.media:
+            record_tool_error("not_found")
             return "There is no attached document or media file in the specified message."
 
         filename = getattr(msg.file, "name", "") or ""
@@ -1156,6 +1183,7 @@ async def inspect_document(
         is_text = mime_type.startswith("text/") or ext in _INSPECT_TEXT_EXTENSIONS
         if not (is_image or is_pdf or is_text):
             # Nothing below can read it, so do not download it just to say so.
+            record_tool_error("invalid_argument")
             return (
                 f"File format '{filename}' ({mime_type}) "
                 "is not currently supported for direct text analysis."
@@ -1164,6 +1192,7 @@ async def inspect_document(
         # Downloading the file strictly into memory (bytes)
         data = await cl.download_media(msg, file=bytes)
         if not data:
+            record_tool_error("internal")
             return "Failed to read the contents of the document."
 
         # 1. If this is an image or scan
@@ -1173,6 +1202,7 @@ async def inspect_document(
             # reject the image: name the format from the bytes.
             fmt = _sniff_image_format(data)
             if fmt is None:
+                record_tool_error("invalid_argument")
                 return (
                     f"Image '{filename}' ({mime_type}) is not in a format Claude can view; "
                     "supported formats are JPEG, PNG, GIF and WebP."
@@ -1221,6 +1251,7 @@ async def inspect_document(
             return text_content
 
         del data
+        record_tool_error("invalid_argument")
         return (
             f"File format '{filename}' ({mime_type}) "
             "is not currently supported for direct text analysis."

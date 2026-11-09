@@ -36,6 +36,7 @@ Message sent successfully:
 - [Proxy Support](#proxy-support)
 - [File Path Security](#file-path-security)
 - [Chat Access Privacy (Allowlist)](#chat-access-privacy-allowlist)
+- [Structured Tool Errors](#structured-tool-errors)
 - [Docker](#docker)
 - [Development](#development)
 - [Security Notes](#security-notes)
@@ -899,6 +900,59 @@ TELEGRAM_AUDIT_LOG=/path/to/telegram_audit.log
   {"timestamp": "2026-11-07T18:25:00.123456+00:00", "account": "work", "tool": "delete_message", "chat_id": 12345678, "message_ids": [42], "revoke": null, "outcome": "deleted"}
   {"timestamp": "2026-11-07T18:25:05.123456+00:00", "account": "work", "tool": "delete_messages_bulk", "chat_id": 12345678, "message_ids": [999], "revoke": true, "outcome": "refused: foreign message IDs [999]"}
   ```
+
+## Structured Tool Errors
+
+By default a failed tool call reaches the client as a normal result whose text
+says "An error occurred ...". Set `TELEGRAM_STRUCTURED_ERRORS=1` (default off)
+to make failures machine-readable without changing any text:
+
+| Variable | Effect |
+|---|---|
+| `TELEGRAM_STRUCTURED_ERRORS` | `1` marks failed calls `isError: true` and adds `_meta["telegram-mcp/error"]` |
+
+```json
+{"isError": true, "_meta": {"telegram-mcp/error": {"kind": "flood", "retry_after": 30}}}
+```
+
+`kind` is one of `invalid_argument`, `not_found`, `private`,
+`forbidden_allowlist` (refused by this server's chat allowlist), `flood`
+(`retry_after` in seconds when Telegram says), `timeout` and `internal`.
+`rpc_error` carries Telegram's constant error name (for example
+`CHAT_ADMIN_REQUIRED`, folded into `private`); `needs_user: true` marks an
+ask-the-user alias prompt (kind `invalid_argument`). For read-only tools fanned
+out over several accounts, `isError` is true only if every account failed with
+a handled error, and `accounts` lists each failing account's kind. An escaped
+exception from any one account fails the whole call (fail-fast, as before): the
+failing account is recorded before the error propagates; accounts still running
+at that moment are not listed. Success results and error text
+are unchanged, and `_meta` never contains chat names, identifiers or message
+text. See `docs/adr/0003-structured-tool-errors.md`.
+
+Fallback kinds for Telegram RPC errors outside the curated sets: any
+`FloodError` (FloodWait, FloodPremiumWait, FloodTestPhoneWait, ...) is `flood`
+with `retry_after`; other 400-class errors are `invalid_argument`, 403-class
+errors are `private`, everything else is `internal`; `rpc_error` always carries
+the constant name (at most 64 characters). FastMCP's own rejections (arguments
+failing schema validation, unknown tool) are `invalid_argument`; any other failure
+that nothing recorded is classified from its cause (`internal` when generic).
+
+Coverage: every failure that goes through `log_and_format_error`, the account
+and allowlist guards, the timeout, and the tools' early-return refusals
+(with or without an "Error:" prefix) are recorded, by their meaning: bad input,
+missing object, missing rights, allowlist, internal. This includes the file-path
+security refusals (`invalid_argument`), expired or invalid invites (`not_found`),
+the `resolve_phone` rate limit (`flood` with `retry_after`; a broken limiter
+configuration is `internal`), and every Telegram RPC error a tool catches (kind
+and `rpc_error` come from the classifier, except these context overrides: `BOT_RESPONSE_TIMEOUT` is
+`timeout`, a send-as Premium requirement is `private`, `PEER_FLOOD` is `flood`, and a target not in the
+chat (`remove_user`, admin-rights patching) is `not_found`, or `private` for your own account; `USER_NOT_MUTUAL_CONTACT` and
+`USER_IS_BLOCKED` are `private`). Known gaps, left as plain successes on purpose:
+the JSON refusals of `premium_required_result` (`send_message`, `edit_message`,
+`transcribe_voice`), the `saved: false` payloads of `set_contact_alias`, empty
+results ("No ... found", page 1 of nothing), idempotent no-ops ("already ...")
+and per-item errors inside a successful payload. Any other plain-text refusal
+added later stays a success until it calls `record_tool_error`.
 
 ## Docker
 

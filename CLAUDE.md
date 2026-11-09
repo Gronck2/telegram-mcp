@@ -61,6 +61,7 @@ This is an MCP server that exposes Telegram operations as tools via [FastMCP](ht
 | `TELEGRAM_SESSION_STRING` | Single-account session |
 | `TELEGRAM_SESSION_STRING_<LABEL>` | Multi-account session (label lowercased in tool `account` param) |
 | `TELEGRAM_EXPOSED_TOOLS` | `all` (default) or `read-only` |
+| `TELEGRAM_STRUCTURED_ERRORS` | `1` to mark failed tool calls `isError` with `_meta["telegram-mcp/error"]` (default off) |
 | `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK` | `1` to allow server CLI roots when client Roots is empty |
 | `TELEGRAM_DEVICE_MODEL`, `TELEGRAM_SYSTEM_VERSION`, `TELEGRAM_APP_VERSION` | Device name shown in Telegram Settings > Devices |
 | `TELEGRAM_PROXY_TYPE` | `socks5`, `socks4`, `http`, or `mtproxy` |

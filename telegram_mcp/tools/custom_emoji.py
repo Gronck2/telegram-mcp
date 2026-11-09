@@ -12,11 +12,13 @@ from telethon.errors.rpcerrorlist import StickersetInvalidError
 from sanitize import sanitize_name, sanitize_user_content
 from telegram_mcp.runtime import (
     _resolve_writable_file_path,
+    classify_error,
     ensure_connected,
     get_client,
     json_serializer,
     log_and_format_error,
     mcp,
+    record_tool_error,
     with_account,
 )
 
@@ -138,6 +140,7 @@ async def get_custom_emoji_pack(
     try:
         short_name = extract_pack_short_name(pack)
         if not short_name:
+            record_tool_error("invalid_argument")
             return "Invalid pack name or URL provided."
 
         cl = get_client(account)
@@ -150,7 +153,8 @@ async def get_custom_emoji_pack(
                     hash=0,
                 )
             )
-        except StickersetInvalidError:
+        except StickersetInvalidError as e:
+            record_tool_error(**classify_error(e))
             return f"Emoji pack '{short_name}' not found or is invalid."
 
         set_meta = getattr(result, "set", None)
@@ -265,6 +269,7 @@ async def preview_custom_emoji(
             if doc_id <= 0:
                 raise ValueError()
         except (ValueError, TypeError):
+            record_tool_error("invalid_argument")
             return "Invalid document_id: must be a positive integer."
 
         cl = get_client(account)
@@ -272,6 +277,7 @@ async def preview_custom_emoji(
 
         docs = await cl(functions.messages.GetCustomEmojiDocumentsRequest(document_id=[doc_id]))
         if not docs:
+            record_tool_error("not_found")
             return f"Custom emoji with document ID {doc_id} not found."
 
         doc = docs[0]
@@ -286,6 +292,7 @@ async def preview_custom_emoji(
             data = await cl.download_media(doc, file=bytes)
 
         if not data:
+            record_tool_error("internal")
             return f"Failed to download media for custom emoji {doc_id}."
 
         ext = ".webp"

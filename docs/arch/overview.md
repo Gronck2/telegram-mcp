@@ -101,6 +101,36 @@ Keep this file up to date when a change alters it.
    Origin check wraps both the streamable HTTP and the SSE app (`/media/`,
    `/upload/` included).
 
+## Error model
+
+Errors are recorded where they are created, never inferred from result text.
+`log_and_format_error` classifies the exception (`classify_error`, types and
+constant Telegram error names only) and appends the result to a per-call
+recorder (`ContextVar` holding a shared list, so `wait_for` and the fan-out
+`gather` tasks all write to it). `with_account` and the few bare-string
+refusals in tools (early returns, with or without an "Error:" prefix, and the file-path
+security helpers) record explicitly with `record_tool_error`; RPC `except` handlers record
+`classify_error(e)`, with documented context overrides: `BOT_RESPONSE_TIMEOUT` is `timeout`, a send-as
+Premium requirement is `private`, `PEER_FLOOD` is `flood`, and a target not in the chat
+(`remove_user`, `_admin_to_patch`) is `not_found` (`private` for the account itself). Deliberate gaps, left as plain successes: the `premium_required_result`
+JSON refusals, `set_contact_alias` `saved: false` payloads, empty results, idempotent no-ops
+and per-item errors. Unknown RPC errors fall back by base class (400 invalid_argument, 403
+private, FloodError flood, else internal). A failure nothing recorded (escaped exception, raw
+`ToolError`) is classified from its cause by a wrapper around the tool manager's `call_tool`
+(`_install_unrecorded_failure_hook`); FastMCP's own rejections are `invalid_argument`. The call hook in
+`_install_annotation_hook` applies the record to the wire result.
+
+With `TELEGRAM_STRUCTURED_ERRORS=1` a failed call gets `isError: true` and
+`_meta["telegram-mcp/error"] = {kind, retry_after?, rpc_error?, needs_user?,
+accounts?}`; text is untouched. Kinds: `invalid_argument`, `not_found`,
+`private`, `forbidden_allowlist`, `flood`, `timeout`, `internal`. A read-only
+fan-out is an error only if every account failed with a handled error; an
+escaped exception from one account fails the whole call (fail-fast; its account
+is recorded before it propagates, accounts still running are not listed). With
+the switch off nothing
+is recorded and results are byte-for-byte as before. Rationale and the plan to
+flip the default: `docs/adr/0003-structured-tool-errors.md`.
+
 ## Deployment (owner's machine)
 
 Docker from `/Users/gronck/self/telegram-mcp` on branch `ours`, with

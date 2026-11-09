@@ -983,12 +983,14 @@ async def send_message(
 
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _send_rich(cl, entity, message, parse_mode.lower(), reply_to=reply_to)
         if format_date or custom_emojis:
             entities, error = _plain_entities(message, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             import random
 
@@ -1070,6 +1072,7 @@ async def send_scheduled_message(
     """
     try:
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
+            record_tool_error("invalid_argument")
             return (
                 f"parse_mode='{parse_mode}' is not supported for scheduled messages. "
                 "Use 'md', 'html' or 'plain'."
@@ -1078,6 +1081,7 @@ async def send_scheduled_message(
         await ensure_connected(cl)
         dt, schedule_error = parse_schedule_date(schedule_date)
         if schedule_error:
+            record_tool_error("invalid_argument")
             return schedule_error
 
         entity = await resolve_entity(chat_id, cl)
@@ -1174,6 +1178,7 @@ async def delete_scheduled_message(
         cl = get_client(account)
         await ensure_connected(cl)
         if not message_ids:
+            record_tool_error("invalid_argument")
             return "message_ids must be a non-empty list."
         entity = await resolve_entity(chat_id, cl)
         await cl(functions.messages.DeleteScheduledMessagesRequest(peer=entity, id=message_ids))
@@ -1260,6 +1265,7 @@ async def list_inline_buttons(
         await ensure_connected(cl)
         message_id, error = _int_or_error(message_id, "message_id")
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         entity = await resolve_entity(chat_id, cl)
@@ -1288,7 +1294,8 @@ async def list_inline_buttons(
 
 
 def _choose_button(buttons, button_text, button_index):
-    """Return (button, None), or (None, why no button was chosen)."""
+    """Return (button, None), or (None, why no button was chosen); the caller returns the
+    reason as the whole result, and it is recorded here (the kind depends on the reason)."""
     if button_text:
         normalized = button_text.strip().lower()
         for button in buttons:
@@ -1296,12 +1303,14 @@ def _choose_button(buttons, button_text, button_index):
                 return button, None
     if button_index is not None:
         if button_index < 0 or button_index >= len(buttons):
+            record_tool_error("invalid_argument")
             return None, f"button_index out of range. Valid indices: 0-{len(buttons) - 1}."
         return buttons[button_index], None
     available = ", ".join(
         f"[{button.index}] " + sanitize_user_content(button.text or "<no text>", max_length=64)
         for button in buttons
     )
+    record_tool_error("not_found")
     return None, f"Button not found. Available buttons: {available}"
 
 
@@ -1361,29 +1370,38 @@ async def press_inline_button(
         cl = get_client(account)
         await ensure_connected(cl)
         if button_text is None and button_index is None:
+            record_tool_error("invalid_argument")
             return "Provide button_text or button_index to choose a button."
         message_id, error = _int_or_error(message_id, "message_id")
         if error:
+            record_tool_error("invalid_argument")
             return error
         button_index, error = _int_or_error(button_index, "button_index")
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         entity = await resolve_entity(chat_id, cl)
         target_message, keyboard = await _keyboard_message(cl, entity, message_id, limit=20)
         if not target_message:
+            record_tool_error("not_found")
             return (
                 "No message with inline buttons found. Specify message_id "
                 "to target a specific message."
             )
         if not keyboard:
+            record_tool_error("not_found")
             return f"Message {target_message.id} does not contain inline buttons."
 
         target_button, error = _choose_button(keyboard.buttons, button_text, button_index)
         if error:
-            return error
+            return error  # recorded by _choose_button
         reason = _unpressable_reason(target_button)
         if reason:
+            # URL and copy buttons hand the caller the URL / text instead: an answer, not
+            # a failure. Every other unpressable button is a refusal.
+            if target_button.kind not in _URL_KINDS and target_button.kind != "copy":
+                record_tool_error("invalid_argument")
             return reason
 
         if target_button.kind == "game":
@@ -1397,16 +1415,19 @@ async def press_inline_button(
         try:
             answer = await cl(request)
         except telethon.errors.BotResponseTimeoutError:
+            record_tool_error("timeout", rpc_error="BOT_RESPONSE_TIMEOUT")
             return (
                 "The bot did not answer the button press in time. The press may still "
                 "have reached it: check the chat before pressing again."
             )
-        except telethon.errors.DataInvalidError:
+        except telethon.errors.DataInvalidError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Telegram refused the button's data; the keyboard has probably changed. "
                 "Call list_inline_buttons again."
             )
-        except telethon.errors.MessageIdInvalidError:
+        except telethon.errors.MessageIdInvalidError as e:
+            record_tool_error(**classify_error(e))
             return f"Message {target_message.id} is no longer in this chat."
 
         response = None
@@ -1485,6 +1506,7 @@ async def list_messages(
 
                     from_date_obj = from_date_obj.replace(tzinfo=timezone.utc)
             except ValueError:
+                record_tool_error("invalid_argument")
                 return "Invalid from_date format. Use YYYY-MM-DD."
 
         if to_date:
@@ -1500,6 +1522,7 @@ async def list_messages(
 
                     to_date_obj = to_date_obj.replace(tzinfo=timezone.utc)
             except ValueError:
+                record_tool_error("invalid_argument")
                 return "Invalid to_date format. Use YYYY-MM-DD."
 
         # Prepare filter parameters
@@ -1630,6 +1653,7 @@ async def transcribe_voice(
         chosen_engine = (engine or transcription.default_engine()).strip().lower()
         if chosen_engine not in transcription.ENGINES:
             accepted = ", ".join(f"'{name}'" for name in sorted(transcription.ENGINES))
+            record_tool_error("invalid_argument")
             return f"Invalid engine '{engine}'. Use one of: {accepted}."
 
         # Pinned to the chosen engine on purpose: a cached telegram transcript
@@ -1654,12 +1678,15 @@ async def transcribe_voice(
 
         msg = await cl.get_messages(entity, ids=message_id)
         if not msg:
+            record_tool_error("not_found")
             return f"Message {message_id} not found."
         if not transcription.is_transcribable(msg):
+            record_tool_error("invalid_argument")
             return f"Message {message_id} has no voice message or video note to transcribe."
 
         config_error = transcription.engine_config_error(chosen_engine)
         if config_error:
+            record_tool_error("internal")
             return config_error
 
         duration = transcription.voice_duration(msg)
@@ -1753,6 +1780,7 @@ async def get_message_context(
             chat, limit=context_size, min_id=message_id, reverse=True
         )
         if not central_message:
+            record_tool_error("not_found")
             return f"Message with ID {message_id} not found in chat {chat_id}."
         # Combine messages in chronological order
         all_messages = list(messages_before) + list(central_message) + list(messages_after)
@@ -1861,15 +1889,18 @@ async def set_default_send_as(
         cl = get_client(account)
         peer = await resolve_input_entity(chat_id, cl)
         if not isinstance(peer, types.InputPeerChannel):
+            record_tool_error("invalid_argument")
             return SEND_AS_UNSUPPORTED_CHAT.format(chat_id=chat_id)
         sender = await resolve_input_entity(send_as, cl)
         sender_label = SEND_AS_SELF_LABEL if isinstance(sender, types.InputPeerSelf) else send_as
         await cl(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=sender))
         return f"Default sender in chat {chat_id} set to {sender_label}."
-    except telethon.errors.SendAsPeerInvalidError:
+    except telethon.errors.SendAsPeerInvalidError as e:
+        record_tool_error(**classify_error(e))
         return SEND_AS_PEER_REFUSED.format(send_as=send_as, chat_id=chat_id)
     except Exception as e:
         if isinstance(e, telethon.errors.RPCError) and is_premium_rpc_error(e):
+            record_tool_error(**{**classify_error(e), "kind": "private"})
             return SEND_AS_PREMIUM_REQUIRED.format(send_as=send_as, chat_id=chat_id)
         return log_and_format_error("set_default_send_as", e, chat_id=chat_id, send_as=send_as)
 
@@ -1934,6 +1965,7 @@ async def forward_message(
     """
     try:
         if topic_id is not None and (type(topic_id) is not int or topic_id <= 0):
+            record_tool_error("invalid_argument")
             return "Error: topic_id must be a positive integer."
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
@@ -2047,6 +2079,7 @@ async def forward_messages(
     """
     try:
         if not message_ids:
+            record_tool_error("invalid_argument")
             return "Error: message_ids must contain at least one id."
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
@@ -2111,12 +2144,14 @@ async def edit_message(
         entity = await resolve_entity(chat_id, cl)
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _edit_rich(cl, entity, message_id, new_text, parse_mode.lower())
         if format_date or custom_emojis:
             entities, error = _plain_entities(new_text, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             await cl(
                 functions.messages.EditMessageRequest(
@@ -2180,6 +2215,7 @@ async def delete_message(
                 account=account,
                 message_ids=[message_id],
             )
+            record_tool_error("not_found")
             return f"Message {message_id} is not in chat {chat_id}; nothing was deleted."
         await cl.delete_messages(entity, message_id)
         record_audit_event(
@@ -2244,7 +2280,7 @@ async def delete_chat_history(
             f"Chat {chat_id} history cleared {scope}: "
             f"{pts_count} messages deleted (offset={offset})."
         )
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
         record_audit_event(
             tool="delete_chat_history",
             chat_id=chat_id,
@@ -2253,6 +2289,7 @@ async def delete_chat_history(
             revoke=revoke,
             extra={"max_id": max_id},
         )
+        record_tool_error(**classify_error(e))
         return "Cannot delete chat history: admin privileges are required."
     except Exception as e:
         record_audit_event(
@@ -2311,6 +2348,7 @@ async def delete_messages_bulk(
                 message_ids=message_ids,
                 revoke=revoke,
             )
+            record_tool_error("not_found")
             return (
                 f"Message(s) {', '.join(map(str, outside))} are not in chat {chat_id}; "
                 "nothing was deleted."
@@ -2334,7 +2372,7 @@ async def delete_messages_bulk(
             extra={"pts_count": pts_count},
         )
         return f"Deleted {pts_count} of {len(message_ids)} messages from chat {chat_id}."
-    except telethon.errors.rpcerrorlist.MessageIdInvalidError:
+    except telethon.errors.rpcerrorlist.MessageIdInvalidError as e:
         record_audit_event(
             tool="delete_messages_bulk",
             chat_id=chat_id,
@@ -2343,8 +2381,9 @@ async def delete_messages_bulk(
             message_ids=message_ids,
             revoke=revoke,
         )
+        record_tool_error(**classify_error(e))
         return "Cannot delete messages: one or more message IDs are invalid."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
         record_audit_event(
             tool="delete_messages_bulk",
             chat_id=chat_id,
@@ -2353,6 +2392,7 @@ async def delete_messages_bulk(
             message_ids=message_ids,
             revoke=revoke,
         )
+        record_tool_error(**classify_error(e))
         return "Cannot delete messages: admin privileges are required."
     except Exception as e:
         record_audit_event(
@@ -2447,7 +2487,8 @@ async def unpin_all_messages(chat_id: Union[int, str], account: Optional[str] = 
         entity = await resolve_entity(chat_id, cl)
         await cl(functions.messages.UnpinAllMessagesRequest(peer=entity))
         return f"All messages unpinned in chat {chat_id}."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Cannot unpin messages: admin privileges are required."
     except Exception as e:
         return log_and_format_error("unpin_all_messages", e, chat_id=chat_id)
@@ -2487,8 +2528,10 @@ async def send_typing(
     """
     try:
         if type(seconds) not in (int, float) or not 0.5 <= seconds <= TYPING_MAX_SECONDS:
+            record_tool_error("invalid_argument")
             return f"seconds must be between 0.5 and {TYPING_MAX_SECONDS:g}."
         if topic_id is not None and (type(topic_id) is not int or topic_id <= 0):
+            record_tool_error("invalid_argument")
             return "Error: topic_id must be a positive integer."
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
@@ -2519,6 +2562,7 @@ async def send_typing(
         # indicator. Resolve first so aliases for the same peer share the same key.
         key = (id(cl), str(peer), topic_id)
         if key in _active_typing:
+            record_tool_error("invalid_argument")
             return "Error: a typing operation is already active for this chat/topic."
         _active_typing.add(key)
         cleanup_ok = False
@@ -2618,12 +2662,14 @@ async def reply_to_message(
         entity = await resolve_entity(chat_id, cl)
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _send_rich(cl, entity, text, parse_mode.lower(), reply_to=message_id)
         if format_date or custom_emojis:
             entities, error = _plain_entities(text, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             import random
 
@@ -2935,6 +2981,7 @@ async def get_history(
             except (ValueError, TypeError):
                 tid = 0
             if tid <= 0:
+                record_tool_error("invalid_argument")
                 return "Error: topic_id must be a positive integer."
             # reply_to makes Telegram return the topic thread (messages.getReplies).
             # Filtering the last `limit` group messages client-side missed most of a
@@ -3049,9 +3096,11 @@ async def create_poll(
     try:
         # Validate question
         if not question or not str(question).strip():
+            record_tool_error("invalid_argument")
             return "Error: Poll question cannot be empty."
         question_text = str(question).strip()
         if len(question_text) > 300:
+            record_tool_error("invalid_argument")
             return "Error: Poll question cannot exceed 300 characters."
 
         # Parse and normalize options
@@ -3069,6 +3118,7 @@ async def create_poll(
                 options = [opt.strip() for opt in options_str.split(sep) if opt.strip()]
 
         if not isinstance(options, (list, tuple)):
+            record_tool_error("invalid_argument")
             return "Error: Poll options must be a list of strings."
 
         raw_options = options
@@ -3092,17 +3142,22 @@ async def create_poll(
                 opt_str = str(opt).strip()
 
             if not opt_str:
+                record_tool_error("invalid_argument")
                 return "Error: Poll options cannot be empty."
             if len(opt_str) > 100:
+                record_tool_error("invalid_argument")
                 return "Error: Each poll option cannot exceed 100 characters."
             normalized_options.append(opt_str)
 
         if len(normalized_options) < 2:
+            record_tool_error("invalid_argument")
             return "Error: Poll must have at least 2 options."
         if len(normalized_options) > 10:
+            record_tool_error("invalid_argument")
             return "Error: Poll can have at most 10 options."
 
         if len(set(normalized_options)) != len(normalized_options):
+            record_tool_error("invalid_argument")
             return "Error: Poll options must be unique."
 
         # Parse close date if provided
@@ -3111,6 +3166,7 @@ async def create_poll(
             try:
                 close_date_obj = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
             except ValueError:
+                record_tool_error("invalid_argument")
                 return "Invalid close_date format. Use YYYY-MM-DD HH:MM:SS format."
 
         cl = get_client(account)
@@ -3186,10 +3242,13 @@ async def vote_poll(
     """
     try:
         if type(message_id) is not int or message_id <= 0:
+            record_tool_error("invalid_argument")
             return "Error: message_id must be a positive integer."
         if not option_indices or any(type(i) is not int for i in option_indices):
+            record_tool_error("invalid_argument")
             return "Error: option_indices must be a non-empty list of integers."
         if len(set(option_indices)) != len(option_indices):
+            record_tool_error("invalid_argument")
             return "Error: option_indices must not contain duplicates."
 
         cl = get_client(account)
@@ -3200,13 +3259,17 @@ async def vote_poll(
 
         message = await cl.get_messages(entity, ids=message_id)
         if message is None or not isinstance(message.media, types.MessageMediaPoll):
+            record_tool_error("not_found")
             return "Error: Message not found or does not contain a poll."
         poll = message.media.poll
         if poll.closed:
+            record_tool_error("invalid_argument")
             return "Error: Poll is closed."
         if len(option_indices) > 1 and not poll.multiple_choice:
+            record_tool_error("invalid_argument")
             return "Error: This poll only allows one answer."
         if any(i < 0 or i >= len(poll.answers) for i in option_indices):
+            record_tool_error("invalid_argument")
             return "Error: Answer index out of range (indices are zero-based)."
 
         await cl(
@@ -3251,6 +3314,7 @@ async def send_reaction(
         if emoji.startswith("custom:"):
             document_id = emoji.removeprefix("custom:")
             if not document_id.isascii() or not document_id.isdigit() or int(document_id) <= 0:
+                record_tool_error("invalid_argument")
                 return "Invalid custom reaction. Use custom:<positive document ID>."
             reaction = ReactionCustomEmoji(document_id=int(document_id))
         else:
@@ -3334,6 +3398,7 @@ async def get_message_reactions(
         peer = await resolve_input_entity(chat_id, cl)
         message = await cl.get_messages(peer, ids=message_id)
         if message is None:
+            record_tool_error("not_found")
             return f"Message {message_id} not found in chat {chat_id}."
 
         if not getattr(getattr(message, "reactions", None), "results", None):
@@ -3427,6 +3492,7 @@ async def save_draft(
         elif mode == "plain":
             entities = None
         else:
+            record_tool_error("invalid_argument")
             return f"parse_mode='{parse_mode}' is not supported for drafts. Use 'html', 'md' or 'plain'."
 
         cl = get_client(account)
@@ -3715,6 +3781,8 @@ async def export_unread_messages(
             ensure_ascii=False,
         )
     except Exception as e:
+        # Arguments below are historically swapped (text kept); record the real kind.
+        record_tool_error(**classify_error(e))
         return log_and_format_error(
             "export_unread_messages",
             "export_chat_history",
@@ -3785,9 +3853,11 @@ async def export_chat_history(
                         tzinfo=timezone.utc
                     )
                 except (ValueError, TypeError):
+                    record_tool_error("invalid_argument")
                     return f"Error: offset_date must be in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS), got '{offset_date}'."
 
         if limit is not None and limit <= 0:
+            record_tool_error("invalid_argument")
             return "Error: limit must be a positive integer."
 
         cl = get_client(account)
