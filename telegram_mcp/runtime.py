@@ -1366,7 +1366,10 @@ def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier
         return False
     ident = chat_identifier.strip()
     if _NUMERIC_CHAT_ID_RE.fullmatch(ident):
-        return int(ident) in allowed
+        try:
+            return int(ident) in allowed
+        except ValueError:  # beyond int()'s 4300-digit limit: never allowed
+            return False
     phone = utils.parse_phone(ident)
     if phone:
         # Only a "+"-led string Telethon itself reads as a phone (no "@" stripping,
@@ -1930,11 +1933,15 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                             # also takes "1_000", "+5" and padded signs.
                             if not _NUMERIC_CHAT_ID_RE.fullmatch(stripped):
                                 raise ValueError(value)
-                            int_value = int(stripped)
-                            if not (-(2**63) <= int_value <= 2**63 - 1):
+                            try:
+                                int_value = int(stripped)
+                            except ValueError:
+                                # Digits only, but beyond int()'s 4300-digit limit.
+                                int_value = None
+                            if int_value is None or not (-(2**63) <= int_value <= 2**63 - 1):
                                 return (
                                     None,
-                                    f"Invalid {p_name}: {value}. ID is out of "
+                                    f"Invalid {p_name}: {value[:40]}. ID is out of "
                                     "the valid integer range.",
                                 )
                             return int_value, None
