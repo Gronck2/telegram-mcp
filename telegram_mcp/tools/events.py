@@ -87,11 +87,19 @@ def _scan_settled(
     return None, soonest_remaining
 
 
+def _exact_alias(chat_id):
+    """apply_alias(), but an id taken from a saved alias stays exact."""
+    resolved = apply_alias(chat_id)
+    if isinstance(chat_id, str) and isinstance(resolved, int):
+        return AliasID(resolved, chat_id)
+    return resolved
+
+
 async def _wait_target(chat_id, account=None) -> Optional[int]:
     """Marked chat id to wait for, or None to wait for any chat."""
     if chat_id is None or chat_id == "":
         return None
-    resolved = apply_alias(chat_id)
+    resolved = _exact_alias(chat_id)
     if isinstance(resolved, int):
         return resolved
     entity = await resolve_entity(resolved, get_client(account))
@@ -513,7 +521,7 @@ async def wait_for_events(
     try:
         target = await _wait_target(chat_id, account)
         if target is not None and is_chat_allowlist_enabled():
-            resolved = apply_alias(chat_id)
+            resolved = _exact_alias(chat_id)
             entity = None
             if not is_chat_allowed(resolved):
                 entity = await resolve_entity(resolved, get_client(account))
