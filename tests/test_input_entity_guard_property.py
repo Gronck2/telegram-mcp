@@ -55,8 +55,8 @@ async def test_granted_string_is_that_username_or_refused(monkeypatch, resolver)
         if cname != cleaned or cinvite:
             continue  # the entry is not a username, so nothing here is a username grant
         monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "@" + cleaned)
-        if not runtime.is_chat_allowed(s):
-            continue
+        # A string no username lookup could answer is refused by the grant itself
+        # (it could be shadowed by an alias); the resolver guard must hold either way.
         checked += 1
         client = make_client(title=s)
         try:
@@ -81,7 +81,7 @@ async def test_granted_string_is_that_username_or_refused(monkeypatch, resolver)
         if looked_up:
             granted_looked_up += 1
         else:
-            granted_refused += 1
+            granted_refused += 1  # counts refused-at-grant and refused-at-resolve
             assert peer is None, repr(s)
             assert client.requests == [], repr(s)
     assert checked > 100 and granted_refused > 20 and granted_looked_up > 20

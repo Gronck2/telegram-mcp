@@ -34,7 +34,8 @@ def test_valid_short_handles_not_refused(ref):
 @pytest.mark.parametrize("entry,ref", [("abcd", b) for b in BAD] + [("abc", "@@abc")])
 async def test_refused_with_zero_requests(monkeypatch, resolver, entry, ref):
     allow(monkeypatch, "@" + entry)
-    assert runtime.is_chat_allowed(ref)
+    # Not granted by string either: an alias could shadow it (apply_alias strips "@").
+    assert not runtime.is_chat_allowed(ref)
     client = make_client(title=ref)
     with pytest.raises((ValueError, runtime.AliasNeedsUser)):
         await getattr(runtime, resolver)(ref, client)

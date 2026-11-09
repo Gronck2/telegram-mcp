@@ -834,7 +834,7 @@ async def set_contact_alias(
         key = alias_key(alias)
         if not key:
             return "Alias must not be empty."
-        if is_handle_like(key):
+        if is_unshadowable_identifier(key):
             # An alias wins over Telethon's own lookup, so "me" or "bob" would
             # silently hijack self / a real @bob for every tool.
             return format_tool_result(

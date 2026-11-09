@@ -1368,7 +1368,14 @@ def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier
         # in apply_alias and they must not grant the phone entry's access.
         return ident.startswith("+") and "+" + phone in allowed
     clean = ident.lstrip("@").strip().lower()
-    return bool(clean) and not clean.startswith("+") and clean in allowed
+    # The string grant needs the same "no alias can shadow this" predicate apply_alias
+    # uses, or an alias could redirect a granted string to another chat.
+    return (
+        bool(clean)
+        and not clean.startswith("+")
+        and clean in allowed
+        and is_unshadowable_identifier(ident)
+    )
 
 
 def _secondary_username_allowed(allowed: set[Union[int, str]], entity: Any) -> bool:
@@ -2352,6 +2359,17 @@ def is_handle_like(value: str) -> bool:
     )
 
 
+def is_unshadowable_identifier(value: str) -> bool:
+    """True if no saved alias may stand for ``value`` while an allowlist is active.
+
+    Superset of ``is_handle_like``: also every string Telethon's ``parse_username``
+    accepts (3-4 character names, Unicode ``\\w`` names, t.me links). Shared by
+    ``apply_alias``, ``set_contact_alias`` and the allowlist's string grant so the
+    three can never diverge.
+    """
+    return is_handle_like(value) or _parses_as_username(value)
+
+
 def _same_word(a: str, b: str) -> bool:
     """True when two tokens are the same word, tolerating an inflected ending.
 
@@ -2440,6 +2458,10 @@ def apply_alias(identifier: Union[int, str]) -> Union[int, str]:
         return identifier
     if is_handle_like(identifier):
         return identifier  # a real username/phone/id/self reference is never shadowed
+    if is_chat_allowlist_enabled() and is_unshadowable_identifier(identifier):
+        # Legacy alias keys that Telethon reads as a username (3-4 chars, Unicode \\w)
+        # keep resolving without an allowlist but never under one.
+        return identifier
     record = load_aliases().get(alias_key(identifier))
     if not record:
         return identifier
