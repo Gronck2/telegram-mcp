@@ -987,6 +987,10 @@ Run one long-lived container serving streamable HTTP, and point every MCP
 client at it (see [Transports](#transports) for client registration):
 
 ```bash
+# The transcript cache bind mount must exist and be writable by uid 1000
+# (appuser) before the first run; otherwise Docker creates it owned by root.
+mkdir -p ./transcript_cache && sudo chown 1000:1000 ./transcript_cache
+
 docker run -d --name telegram-mcp --restart unless-stopped \
   --env-file .env \
   -e MCP_TRANSPORT=http \
