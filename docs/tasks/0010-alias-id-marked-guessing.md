@@ -51,10 +51,12 @@ Audit of `apply_alias(...)` callers outside `runtime.py` (round 1 deep review):
   `AliasID(target, chat_id)` at the call site (the `apply_alias` contract is
   unchanged), so `_resolve` skips the guess and a stale alias gives the existing
   `target_not_found` refusal.
-- `tools/events.py` `_wait_target` (L94) and `wait_for_events` (L516): `apply_alias`
-  yields a plain int that `resolve_entity` may still guess for. They only pick
-  the chat to wait on and feed an allowlist check; they neither send nor save.
-  Deferred to a follow-up task (events.py).
+- `tools/events.py` `wait_for_events` (L516-519): `apply_alias` yields a plain
+  int that `resolve_entity` may still guess for, but only for the allowlist
+  pre-check; it neither sends nor saves, `target` stays the exact alias id and
+  `_select_events` filters every event against the read allowlist again.
+  `_wait_target` (L94) also calls `apply_alias` but returns the int without
+  resolving it. Deferred to a follow-up task (events.py).
 - `runtime.py` `validate_single_id` (L2193) already wraps the result in `AliasID`;
   `_resolve` (L3161) is the fixed resolver itself.
 
