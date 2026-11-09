@@ -1277,6 +1277,7 @@ ROOTS_STATUS_UNSUPPORTED_FALLBACK = "unsupported_fallback"
 ROOTS_STATUS_CLIENT_DENY_ALL = "client_deny_all"
 ROOTS_STATUS_SERVER_FALLBACK = "server_fallback"
 ROOTS_STATUS_SERVER_ONLY = "server_only"
+ROOTS_STATUS_CLIENT_OUTSIDE_SERVER = "client_outside_server_roots"
 ROOTS_STATUS_ERROR = "error"
 ROOTS_STATUS_TIMEOUT = "timeout"
 # Some clients accept the server-initiated roots/list request but never answer
@@ -3355,6 +3356,32 @@ def _path_is_within_any_root(candidate: Path, roots: List[Path]) -> bool:
     return any(_path_is_within_root(candidate, root) for root in roots)
 
 
+def _narrow_client_roots(client_roots: List[Path], server_roots: List[Path]) -> List[Path]:
+    """Client roots equal to or under some server root (ancestors are dropped)."""
+    return [c for c in client_roots if _path_is_within_any_root(c, server_roots)]
+
+
+def _apply_server_ceiling(
+    client_roots: List[Path], server_roots: List[Path]
+) -> tuple[List[Path], str]:
+    """Client roots may only narrow a non-empty set of server roots.
+
+    An empty intersection is a deny-all with its own status; it never falls
+    back to the server roots, whatever TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK says.
+    """
+    if not server_roots:
+        return _dedupe_paths(client_roots), ROOTS_STATUS_READY
+    narrowed = _narrow_client_roots(client_roots, server_roots)
+    if narrowed:
+        return _dedupe_paths(narrowed), ROOTS_STATUS_READY
+    # Constant message: logs must not carry paths (see test_error_logging).
+    logger.warning(
+        "None of the client MCP Roots lies inside the server allowed roots; "
+        "dropped all client roots and disabled file-path tools."
+    )
+    return [], ROOTS_STATUS_CLIENT_OUTSIDE_SERVER
+
+
 def _first_resolution_root(roots: List[Path]) -> Path:
     first = roots[0]
     return first if first.is_dir() else first.parent
@@ -3514,7 +3541,7 @@ async def _get_effective_allowed_roots_with_status(
         recovered_roots = _coerce_paths_from_list_roots_validation_error(error)
         if recovered_roots:
             logger.warning("MCP client returned non-URI roots; recovered validated paths.")
-            return recovered_roots, ROOTS_STATUS_READY
+            return _apply_server_ceiling(recovered_roots, fallback_roots)
         if _is_roots_unsupported_error(error):
             if fallback_roots:
                 return fallback_roots, ROOTS_STATUS_UNSUPPORTED_FALLBACK
@@ -3539,7 +3566,7 @@ async def _get_effective_allowed_roots_with_status(
             continue
 
     if client_roots:
-        return _dedupe_paths(client_roots), ROOTS_STATUS_READY
+        return _apply_server_ceiling(client_roots, fallback_roots)
 
     # Roots API succeeded but returned an empty list. By default this is an
     # explicit deny-all. Some clients (e.g. ones that implement the Roots
@@ -3571,6 +3598,16 @@ async def _ensure_allowed_roots(
                 _path_refusal(
                     f"{tool_name} is disabled because the client provided an empty "
                     "MCP Roots list (deny-all)."
+                ),
+            )
+        if status == ROOTS_STATUS_CLIENT_OUTSIDE_SERVER:
+            return (
+                [],
+                _path_refusal(
+                    f"{tool_name} is disabled because none of the client's MCP Roots "
+                    "lies inside the server's allowed roots (TELEGRAM_ALLOWED_ROOTS). "
+                    "Narrow the client roots to a server root or add the folder to "
+                    "the server roots."
                 ),
             )
         if status == ROOTS_STATUS_ERROR:

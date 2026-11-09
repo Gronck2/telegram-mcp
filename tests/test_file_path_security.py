@@ -182,9 +182,10 @@ async def test_symlinks_that_stay_inside_root_resolve_to_their_target(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
+async def test_client_roots_narrow_server_allowlist(tmp_path, monkeypatch):
+    # Task 0011: a client root only counts when it lies inside a server root.
     server_root = (tmp_path / "server_root").resolve()
-    client_root = (tmp_path / "client_root").resolve()
+    client_root = (server_root / "client_root").resolve()
     server_root.mkdir(parents=True)
     client_root.mkdir(parents=True)
 

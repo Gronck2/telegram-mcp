@@ -1708,9 +1708,10 @@ async def test_server_roots_only_keeps_client_roots_without_server_roots(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_client_roots_still_replace_server_roots_by_default(tmp_path, monkeypatch):
+async def test_client_roots_narrow_server_roots_by_default(tmp_path, monkeypatch):
+    # Task 0011: client roots narrow (not replace) the server roots.
     server_root = tmp_path / "server"
-    client_root = tmp_path / "client"
+    client_root = server_root / "client"
     server_root.mkdir()
     client_root.mkdir()
     monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [server_root.resolve()])
