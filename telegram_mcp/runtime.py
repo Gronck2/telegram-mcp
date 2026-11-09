@@ -2532,23 +2532,36 @@ def alias_failure(original: Any, identifier: Any) -> Optional[AliasNeedsUser]:
     )
 
 
-def _is_malformed_handle(identifier: Any) -> bool:
-    """True for a handle-shaped string that is no username, id, phone or self reference.
+def _is_self_ref(identifier: Any) -> bool:
+    """True for the strings ``get_entity`` treats as the own account (any case, no strip)."""
+    return isinstance(identifier, str) and identifier.lower() in _SELF_REFS
 
-    ``abcde_``, ``1abcde``, ``ab__cde`` and names over 32 characters pass the loose
-    handle check but cannot be real usernames, so only a cached display name could
-    ever answer them.
+
+def _parses_as_username(identifier: Any) -> bool:
+    """True if Telethon would look this string up as a username (name, link or ``@name``).
+
+    The rule ``_username_cached`` uses: independent of ``is_handle_like``, so ``t.me``
+    links and 3-4 character handles count. Self references are excluded.
+    """
+    if not isinstance(identifier, str) or _is_self_ref(identifier):
+        return False
+    name, is_invite = utils.parse_username(identifier)
+    return bool(name) and not is_invite
+
+
+def _is_malformed_handle(identifier: Any) -> bool:
+    """True for a handle-shaped string that only a cached display name could answer.
+
+    ``abcde_``, ``1abcde``, ``ab__cde``, names over 32 characters and ``@``-prefixed
+    ids or self references pass the loose handle check but are no usernames. Bare
+    ``me``/``self``, ids and phones are not usernames either, yet Telethon answers
+    them without the name column, so they are exempt.
     """
     if not isinstance(identifier, str) or not is_handle_like(identifier):
         return False
-    bare = identifier.strip().lstrip("@")
-    if (
-        identifier.strip().startswith("+")
-        or bare.lstrip("-").isdigit()
-        or bare.lower() in _SELF_REFS
-    ):
+    if _is_self_ref(identifier) or utils.parse_phone(identifier):
         return False
-    return not _is_username_identifier(identifier)
+    return not _parses_as_username(identifier)
 
 
 def _username_cached(client, identifier: str) -> bool:
@@ -2575,7 +2588,11 @@ def _guarded_input_getter(client):
     """
 
     async def get(identifier):
-        if _is_username_identifier(identifier) and not _username_cached(client, identifier):
+        if _is_self_ref(identifier):
+            # get_input_entity short-circuits only the exact lowercase strings; any other
+            # case would be looked up by display name, while resolve_entity answers self.
+            return types.InputPeerSelf()
+        if _parses_as_username(identifier) and not _username_cached(client, identifier):
             return utils.get_input_peer(await client.get_entity(identifier))
         return await client.get_input_entity(identifier)
 
