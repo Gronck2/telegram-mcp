@@ -119,7 +119,7 @@ async def test_resolvers_agree_and_skip_impostor(monkeypatch, ref):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ref", ["t.me/+abc", "My Group", "tg://resolve?domain=x", "+1 555 123"])
+@pytest.mark.parametrize("ref", ["t.me/+abc", "My Group", "tg://resolve?domain=x"])
 async def test_no_allowlist_requests_unchanged(ref):
     guarded = make_client(title=ref)
     plain = make_client(title=ref)

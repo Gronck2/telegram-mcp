@@ -79,10 +79,11 @@ async def test_phone_never_resolves_to_chat_named_like_it(monkeypatch, getter, s
 
 
 @pytest.mark.asyncio
-async def test_without_allowlist_phone_still_falls_back_to_names():
+async def test_without_allowlist_phone_never_falls_back_to_names():
+    # task 0006 round 2: a phone is never matched by a chat title, allowlist or not
     client = make_client()
-    peer = await runtime.resolve_input_entity(PHONE, client)
-    assert peer.channel_id == IMPOSTOR.id
+    with pytest.raises(ValueError):
+        await runtime.resolve_input_entity(PHONE, client)
 
 
 @pytest.mark.asyncio

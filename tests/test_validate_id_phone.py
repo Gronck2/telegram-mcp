@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
-from telethon import TelegramClient, functions, types
+from telethon import TelegramClient, functions, types, utils
 from telethon.sessions import StringSession
 
 from telegram_mcp import runtime
@@ -136,6 +136,23 @@ async def test_no_allowlist_phone_resolves_by_phone_not_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resolver", ["resolve_entity", "resolve_input_entity"])
+async def test_no_allowlist_phone_never_matches_a_title(monkeypatch, resolver):
+    resolve = getattr(runtime, resolver)
+    client = make_client()  # IMPOSTOR is cached with title == PHONE, no contact
+    use(monkeypatch, client)
+    with pytest.raises(ValueError):
+        await resolve(PHONE, client)
+    allowed = (functions.contacts.GetContactsRequest, functions.messages.GetDialogsRequest)
+    assert all(isinstance(r, allowed) for r in client.requests)
+
+    client = make_client(contact=OWNER)
+    use(monkeypatch, client)
+    got = await resolve(PHONE, client)
+    assert utils.get_peer_id(got) == OWNER.id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("variant", ["plain", "peer_subject", "raise_errors"])
 async def test_allowlist_of_the_digit_id_does_not_grant_the_phone(monkeypatch, variant):
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", str(DIGITS_ID))
@@ -159,8 +176,10 @@ async def test_allowlist_of_the_digit_id_does_not_grant_the_phone(monkeypatch, v
 
 
 @pytest.mark.asyncio
-async def test_allowlist_with_the_phone_entry_allows_via_phone_lookup(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", f"{PHONE},{OWNER.id}")
+@pytest.mark.parametrize("allow", [f"{PHONE},{OWNER.id}", PHONE])
+async def test_allowlist_with_the_phone_entry_allows_via_phone_lookup(monkeypatch, allow):
+    # the second variant has only the "+" entry: it alone must grant the contact
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", allow)
     client = make_client(contact=OWNER)
     use(monkeypatch, client)
     fn, calls = tool()
@@ -192,10 +211,14 @@ async def test_allowlist_phone_entry_does_not_grant_the_digit_string(monkeypatch
 
 @pytest.mark.asyncio
 async def test_unknown_phone_under_allowlist_is_denied_not_name_matched(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", f"{DIGITS_ID},{IMPOSTOR.id}")
+    impostor_id = utils.get_peer_id(IMPOSTOR)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", f"{DIGITS_ID},{impostor_id}")
     client = make_client()
     use(monkeypatch, client)
     fn, calls = tool()
     out = await fn(chat_id=PHONE)
     assert calls == []
     assert out != "ran"
+    for resolve in (runtime.resolve_entity, runtime.resolve_input_entity):
+        with pytest.raises(ValueError):
+            await resolve(PHONE, client)

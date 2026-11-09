@@ -2728,8 +2728,8 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
     phone-row miss, to the exact display name / title of a cached chat (a chat
     called ``+15551234567``). Telethon 1.45 ``get_entity`` raises on a contacts
     miss instead, but it is pinned here too as defence in depth against future
-    Telethon versions. Under an allowlist only a phone-row hit or a contacts entry
-    with this phone answers; anything else is refused.
+    Telethon versions. Only a phone-row hit or a contacts entry with this phone
+    answers, with or without an allowlist; anything else is refused.
     """
     phone = utils.parse_phone(identifier)
     if _phone_cached(client, identifier):
@@ -2743,8 +2743,8 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
         if getattr(user, "phone", None) == phone:
             return user if as_entity else utils.get_input_peer(user)
     raise ValueError(
-        f"{identifier!r} is not in the contacts or the phone cache; chat access is "
-        "restricted by an allowlist, so a phone cannot be matched by display name."
+        f"{identifier!r} is not in the contacts or the phone cache; a phone is never "
+        "matched by display name."
     )
 
 
@@ -2789,13 +2789,37 @@ def _guarded_input_getter(client):
     return get
 
 
+def _phone_routed(client, getter: str):
+    """Raw client lookup, except that phone strings go through ``_phone_lookup``."""
+    raw = getattr(client, getter)
+    as_entity = getter == "get_entity"
+
+    async def get(identifier):
+        if (
+            isinstance(identifier, str)
+            and utils.parse_phone(identifier)
+            and not _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip())
+        ):
+            # bare digit strings are ids, not phones; they stay with Telethon
+            return await _phone_lookup(client, identifier, as_entity)
+        return await raw(identifier)
+
+    return get
+
+
 def _lookup_callable(client, getter: str):
-    """The client's lookup method; under an allowlist the username-safe input lookup."""
+    """The client's lookup method.
+
+    Phone strings always go through ``_phone_lookup`` (never matched by title);
+    under an allowlist the username-safe lookups are used for everything else too.
+    """
     if is_chat_allowlist_enabled():
         if getter == "get_input_entity":
             return _guarded_input_getter(client)
         if getter == "get_entity":
             return _guarded_entity_getter(client)
+    elif getter in ("get_input_entity", "get_entity"):
+        return _phone_routed(client, getter)
     return getattr(client, getter)
 
 

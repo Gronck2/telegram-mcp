@@ -179,27 +179,21 @@ async def test_agreement_input_equals_peer_of_entity_or_both_refuse(monkeypatch,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("getter", ["resolve_entity", "resolve_input_entity"])
 @pytest.mark.parametrize("string", ["+15551234567", "+1 555 123 4567"])
-async def test_without_allowlist_phone_uses_telethon_unchanged(monkeypatch, getter, string):
+async def test_without_allowlist_phone_resolves_by_contact_never_by_title(
+    monkeypatch, getter, string
+):
+    # task 0006 round 2: phones go through _phone_lookup with or without a list
     client = make_client(title=string, contacts=[PEER])
-    calls = []
-    for name in ("get_entity", "get_input_entity"):
-        original = getattr(client, name)
-
-        async def spy(identifier, _o=original, _n=name):
-            calls.append((_n, identifier))
-            return await _o(identifier)
-
-        setattr(client, name, spy)
-    await outcome(getter, string, client)
-    assert calls and calls[0] == (
-        getter.replace("resolve_", "get_").replace("input_entity", "input_entity"),
-        string,
-    )
-    # Only Telethon's own GetContacts, at most once.
+    got = await getattr(runtime, getter)(string, client)
+    assert utils.get_peer_id(got) == PEER.id
     assert (
         len([r for r in client.requests if isinstance(r, functions.contacts.GetContactsRequest)])
-        <= 1
+        == 1
     )
+    # no contact, only a chat titled like the phone: refused, not matched by title
+    client = make_client(title=string)
+    with pytest.raises(ValueError):
+        await getattr(runtime, getter)(string, client)
 
 
 @pytest.mark.asyncio

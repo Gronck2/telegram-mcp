@@ -46,6 +46,11 @@ def make_client(contact=None):
         if isinstance(request, functions.contacts.GetContactsRequest):
             users = [contact] if contact else []
             return types.contacts.Contacts(contacts=[], saved_count=0, users=users)
+        if isinstance(request, functions.users.GetUsersRequest):
+            known = {u.id: u for u in (OWNER, ID_PEER)}
+            return [known[i.user_id] for i in request.id if i.user_id in known]
+        if isinstance(request, functions.messages.GetHistoryRequest):
+            return types.messages.Messages(messages=[], chats=[], users=[])
         if isinstance(request, functions.messages.SendMessageRequest):
             return types.Updates(updates=[], users=[], chats=[], date=None, seq=0)
         if isinstance(request, functions.contacts.BlockRequest):
@@ -63,19 +68,29 @@ def use(monkeypatch, client):
         monkeypatch.setattr(module, "get_client", lambda account=None: client)
 
 
+def _flatten(value):
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _flatten(item)
+    elif value is not None:
+        yield value
+
+
 def peers_in(requests):
     out = []
     for r in requests:
         for attr in ("peer", "id"):
-            p = getattr(r, attr, None)
-            if p is not None:
-                out.append(p)
+            out.extend(_flatten(getattr(r, attr, None)))
     return out
 
 
 def touches_digit_id(client):
     for p in peers_in(client.requests):
-        if getattr(p, "user_id", None) == DIGITS_ID or getattr(p, "channel_id", None) == DIGITS_ID:
+        if getattr(p, "user_id", None) == DIGITS_ID:
+            return True
+        if getattr(p, "channel_id", None) == DIGITS_ID:
+            return True
+        if isinstance(p, (types.User, types.Channel)) and p.id == DIGITS_ID:
             return True
     return False
 
@@ -167,11 +182,15 @@ async def test_alias_int_path_and_ask_payload_unchanged(monkeypatch):
     assert calls == [] and out != "ran"
 
 
+DENIED = "restricted by privacy policy"
+
+
 def _modes():
     return [
         ("none", None),
         ("digit_id_only", str(DIGITS_ID)),
         ("phone_entry", f"{PHONE},{OWNER.id}"),
+        ("phone_entry_only", PHONE),
         ("contact_id", str(OWNER.id)),
     ]
 
@@ -190,8 +209,8 @@ async def test_send_message_phone_matrix(monkeypatch, mode, allow, spelling):
     assert not [r for r in client.requests if isinstance(r, functions.messages.GetDialogsRequest)]
     if mode == "digit_id_only":
         assert sends == []
-        assert out != "ran"
-    elif mode in ("phone_entry", "contact_id", "none"):
+        assert DENIED in out
+    else:
         assert len(sends) == 1
         assert sends[0].peer.user_id == OWNER.id
     if allow:
@@ -209,9 +228,14 @@ async def test_get_messages_phone_never_reads_digit_peer(monkeypatch, mode, allo
     client = make_client(contact=OWNER)
     use(monkeypatch, client)
     out = await messages.get_messages(chat_id=PHONE)
+    reads = [r for r in client.requests if isinstance(r, functions.messages.GetHistoryRequest)]
     assert not touches_digit_id(client)
     if mode == "digit_id_only":
-        assert "ran" not in out and "No messages" not in out
+        assert reads == []
+        assert DENIED in out
+    else:
+        assert len(reads) == 1
+        assert reads[0].peer.user_id == OWNER.id
 
 
 @pytest.mark.asyncio
@@ -226,10 +250,12 @@ async def test_block_user_peer_subject_phone(monkeypatch, mode, allow):
     assert not touches_digit_id(client)
     if mode == "digit_id_only":
         assert blocks == []
+        assert DENIED in out
         assert "blocked" not in out
     else:
         assert len(blocks) == 1
         assert blocks[0].id.id == OWNER.id
+        assert "blocked" in out
 
 
 @pytest.mark.asyncio

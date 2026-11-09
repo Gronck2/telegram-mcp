@@ -9,7 +9,10 @@ Fix at the single conversion point, `validate_single_id` in
 `+`-led string that `utils.parse_phone` accepts is returned as a string and
 flows into the existing 0005 machinery (`deny_peer_param` ->
 `_peer_item_allowed` -> `resolve_entity` -> `_phone_lookup` -> entity check +
-`+`-phone entry). No change to the resolvers or the allowlist matcher. The
+`+`-phone entry). Round 2: `_lookup_callable` also routes phone strings through
+`_phone_lookup` when no allowlist is set (via `_phone_routed`), so a phone
+resolves only via the phone cache or contacts, never by a chat title. No other
+change to the resolvers or the allowlist matcher. The
 numeric branch is tightened to the same `_NUMERIC_CHAT_ID_RE` the allowlist
 code uses, so both sides agree on what an id string is.
 
@@ -58,7 +61,7 @@ code uses, so both sides agree on what an id string is.
   phones too; fine, a `+` is an explicit phone marker.
 - Strict numeric regex is a small extra behaviour change (see task, owner
   call, recommended); alternative is to keep `int()` for non-`+` strings.
-- Phone lookup under an allowlist can fail where a numeric id would have
+- Phone lookup (with or without an allowlist) can fail where a numeric id would have
   succeeded (phone not in contacts or phone cache): intended, the user must
   use the id then.
 
