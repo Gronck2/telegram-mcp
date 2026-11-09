@@ -706,6 +706,7 @@ async def create_folder(
                         or is_chat_allowed(utils.get_peer_id(peer), access=CHAT_ACCESS_WRITE)
                     )
                 ):
+                    record_tool_error("forbidden_allowlist")
                     return check_chat_access(chat_id, access=CHAT_ACCESS_WRITE)
                 include_peers.append(peer)
 

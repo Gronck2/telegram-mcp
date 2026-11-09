@@ -36,6 +36,7 @@ Message sent successfully:
 - [Proxy Support](#proxy-support)
 - [File Path Security](#file-path-security)
 - [Chat Access Privacy (Allowlist)](#chat-access-privacy-allowlist)
+- [Structured Tool Errors](#structured-tool-errors)
 - [Docker](#docker)
 - [Development](#development)
 - [Security Notes](#security-notes)
@@ -899,6 +900,31 @@ TELEGRAM_AUDIT_LOG=/path/to/telegram_audit.log
   {"timestamp": "2026-11-07T18:25:00.123456+00:00", "account": "work", "tool": "delete_message", "chat_id": 12345678, "message_ids": [42], "revoke": null, "outcome": "deleted"}
   {"timestamp": "2026-11-07T18:25:05.123456+00:00", "account": "work", "tool": "delete_messages_bulk", "chat_id": 12345678, "message_ids": [999], "revoke": true, "outcome": "refused: foreign message IDs [999]"}
   ```
+
+## Structured Tool Errors
+
+By default a failed tool call reaches the client as a normal result whose text
+says "An error occurred ...". Set `TELEGRAM_STRUCTURED_ERRORS=1` (default off)
+to make failures machine-readable without changing any text:
+
+| Variable | Effect |
+|---|---|
+| `TELEGRAM_STRUCTURED_ERRORS` | `1` marks failed calls `isError: true` and adds `_meta["telegram-mcp/error"]` |
+
+```json
+{"isError": true, "_meta": {"telegram-mcp/error": {"kind": "flood", "retry_after": 30}}}
+```
+
+`kind` is one of `invalid_argument`, `not_found`, `private`,
+`forbidden_allowlist` (refused by this server's chat allowlist), `flood`
+(`retry_after` in seconds when Telegram says), `timeout` and `internal`.
+`rpc_error` carries Telegram's constant error name (for example
+`CHAT_ADMIN_REQUIRED`, folded into `private`); `needs_user: true` marks an
+ask-the-user alias prompt (kind `invalid_argument`). For read-only tools fanned
+out over several accounts, `isError` is true only if every account failed, and
+`accounts` lists each failing account's kind. Success results and error text
+are unchanged, and `_meta` never contains chat names, identifiers or message
+text. See `docs/adr/0003-structured-tool-errors.md`.
 
 ## Docker
 

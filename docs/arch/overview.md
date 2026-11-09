@@ -101,6 +101,24 @@ Keep this file up to date when a change alters it.
    Origin check wraps both the streamable HTTP and the SSE app (`/media/`,
    `/upload/` included).
 
+## Error model
+
+Errors are recorded where they are created, never inferred from result text.
+`log_and_format_error` classifies the exception (`classify_error`, types and
+constant Telegram error names only) and appends the result to a per-call
+recorder (`ContextVar` holding a shared list, so `wait_for` and the fan-out
+`gather` tasks all write to it). `with_account` and the few bare-string
+refusals in tools record explicitly with `record_tool_error`. The call hook in
+`_install_annotation_hook` applies the record to the wire result.
+
+With `TELEGRAM_STRUCTURED_ERRORS=1` a failed call gets `isError: true` and
+`_meta["telegram-mcp/error"] = {kind, retry_after?, rpc_error?, needs_user?,
+accounts?}`; text is untouched. Kinds: `invalid_argument`, `not_found`,
+`private`, `forbidden_allowlist`, `flood`, `timeout`, `internal`. A read-only
+fan-out is an error only if every account failed. With the switch off nothing
+is recorded and results are byte-for-byte as before. Rationale and the plan to
+flip the default: `docs/adr/0003-structured-tool-errors.md`.
+
 ## Deployment (owner's machine)
 
 Docker from `/Users/gronck/self/telegram-mcp` on branch `ours`, with

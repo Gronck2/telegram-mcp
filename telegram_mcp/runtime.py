@@ -18,6 +18,7 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 from contextlib import contextmanager
+from contextvars import ContextVar
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -213,6 +214,78 @@ def _tool_timeout_seconds(value: Optional[str] = None) -> Optional[float]:
     return timeout if timeout > 0 else None
 
 
+# --- Structured tool errors (opt-in, ADR 0003) -------------------------------------
+# Errors are recorded where they are created (never inferred from result text) in a
+# per-call recorder; the call hook turns the record into ``isError`` and ``_meta``.
+STRUCTURED_ERRORS_META_KEY = "telegram-mcp/error"
+
+
+def structured_errors_enabled() -> bool:
+    """True when ``TELEGRAM_STRUCTURED_ERRORS`` is set to a truthy value."""
+    raw = os.getenv("TELEGRAM_STRUCTURED_ERRORS", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+class _ErrorRecorder:
+    """Errors recorded during one tool call; shared by every task of that call."""
+
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+        self.fanout: Optional[list[str]] = None
+
+
+_error_recorder: ContextVar[Optional[_ErrorRecorder]] = ContextVar(
+    "telegram_mcp_error_recorder", default=None
+)
+_error_account: ContextVar[Optional[str]] = ContextVar("telegram_mcp_error_account", default=None)
+
+
+def record_tool_error(kind: str, **fields: Any) -> None:
+    """Record that the running tool call failed with ``kind`` (no-op when disabled)."""
+    recorder = _error_recorder.get()
+    if recorder is None:
+        return
+    entry = {"kind": kind, **{k: v for k, v in fields.items() if v not in (None, False)}}
+    account = _error_account.get()
+    if account is not None:
+        entry["account"] = account
+    recorder.entries.append(entry)
+
+
+_ENTRY_DETAIL_KEYS = ("retry_after", "rpc_error", "needs_user")
+
+
+def _error_meta(recorder: _ErrorRecorder, timed_out: bool) -> tuple[dict, bool]:
+    """Build the ``_meta`` error object and whether the call failed overall."""
+    entries = [{"kind": "timeout"}] if timed_out else recorder.entries
+    if not entries:
+        entries = [{"kind": "internal"}]
+    plain = [{k: v for k, v in e.items() if k != "account"} for e in entries]
+    if not recorder.fanout:
+        return dict(plain[-1]), True
+    by_account = {e["account"]: e for e in entries if "account" in e}
+    failed_all = set(recorder.fanout) <= set(by_account)
+    if all(p == plain[0] for p in plain):
+        meta = dict(plain[0])
+    else:
+        kinds = {p["kind"] for p in plain}
+        meta = {"kind": kinds.pop() if len(kinds) == 1 else "internal"}
+    meta["accounts"] = [by_account[label] for label in sorted(by_account)] or [
+        {"kind": meta["kind"]}
+    ]
+    return meta, failed_all
+
+
+def _apply_structured_error(result, recorder: _ErrorRecorder, timed_out: bool) -> None:
+    """Mark a CallToolResult as failed and attach the machine-readable error."""
+    if not (recorder.entries or timed_out or result.isError):
+        return
+    meta, failed = _error_meta(recorder, timed_out)
+    result.meta = {**(result.meta or {}), STRUCTURED_ERRORS_META_KEY: meta}
+    if failed:
+        result.isError = True
+
+
 def _install_annotation_hook() -> None:
     from mcp.types import CallToolRequest, ServerResult, CallToolResult
 
@@ -220,30 +293,39 @@ def _install_annotation_hook() -> None:
 
     async def annotated_handler(req):
         timeout = _tool_timeout_seconds()
-        if timeout is None:
-            response = await original_handler(req)
-        else:
-            try:
-                response = await asyncio.wait_for(original_handler(req), timeout=timeout)
-            except asyncio.TimeoutError:
-                response = ServerResult(
-                    CallToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=(
-                                    "Telegram MCP tool timed out after "
-                                    f"{timeout:g}s (code: GEN-TIMEOUT). "
-                                    "Completion is unknown; a write may already have "
-                                    "succeeded. Check destination state before retrying "
-                                    "non-idempotent operations."
-                                ),
-                            )
-                        ],
-                        isError=True,
+        recorder = _ErrorRecorder() if structured_errors_enabled() else None
+        token = _error_recorder.set(recorder)
+        timed_out = False
+        try:
+            if timeout is None:
+                response = await original_handler(req)
+            else:
+                try:
+                    response = await asyncio.wait_for(original_handler(req), timeout=timeout)
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    response = ServerResult(
+                        CallToolResult(
+                            content=[
+                                TextContent(
+                                    type="text",
+                                    text=(
+                                        "Telegram MCP tool timed out after "
+                                        f"{timeout:g}s (code: GEN-TIMEOUT). "
+                                        "Completion is unknown; a write may already have "
+                                        "succeeded. Check destination state before retrying "
+                                        "non-idempotent operations."
+                                    ),
+                                )
+                            ],
+                            isError=True,
+                        )
                     )
-                )
+        finally:
+            _error_recorder.reset(token)
         if isinstance(response, ServerResult) and isinstance(response.root, CallToolResult):
+            if recorder is not None:
+                _apply_structured_error(response.root, recorder, timed_out)
             content = response.root.content
             if content:
                 response.root.content = [
@@ -924,18 +1006,28 @@ def with_account(readonly=False):
             # account is None AND multi-mode
             if not readonly:
                 labels = ", ".join(clients.keys())
+                record_tool_error("invalid_argument")
                 return f"Error: 'account' is required. Available accounts: {labels}"
 
             # Read-only fan-out to all accounts concurrently
+            recorder = _error_recorder.get()
+            if recorder is not None:
+                recorder.fanout = list(clients)
+
             async def _call_for(label):
                 kw = dict(kwargs)
                 kw["account"] = label
+                _error_account.set(label)  # this task has its own context copy
                 try:
                     result = await fn(*args, **kw)
                     failed = False
                 except ToolError as error:
                     result = str(error)
                     failed = True
+                    if recorder is not None and not any(
+                        e.get("account") == label for e in recorder.entries
+                    ):
+                        record_tool_error("internal")
                 return label, result, failed
 
             results = await asyncio.gather(*(_call_for(label) for label in clients))
@@ -1758,6 +1850,14 @@ class ChatAccessDeniedError(Exception):
     pass
 
 
+class EntityNotFoundError(ValueError):
+    """A peer reference could not be resolved (structured kind ``not_found``)."""
+
+
+class InvalidReferenceError(ValueError):
+    """A peer reference is malformed or out of range (kind ``invalid_argument``)."""
+
+
 def _is_flood_wait(error: Exception) -> bool:
     """True for Telethon FloodWaitError."""
     try:
@@ -1789,6 +1889,87 @@ def _telegram_error_name(error: RPCError) -> Optional[str]:
     return None
 
 
+_NOT_FOUND_RPC = frozenset(
+    {
+        "PEER_ID_INVALID",
+        "USERNAME_NOT_OCCUPIED",
+        "USERNAME_INVALID",
+        "CHAT_ID_INVALID",
+        "MSG_ID_INVALID",
+        "MESSAGE_ID_INVALID",
+        "INVITE_HASH_EMPTY",
+        "INVITE_HASH_EXPIRED",
+        "INVITE_HASH_INVALID",
+        "USER_ID_INVALID",
+        "CHANNEL_INVALID",
+    }
+)
+_PRIVATE_RPC = frozenset(
+    {
+        "CHANNEL_PRIVATE",
+        "CHAT_FORBIDDEN",
+        "USER_NOT_PARTICIPANT",
+        "CHANNEL_BANNED",
+        "USER_BANNED_IN_CHANNEL",
+        "CHAT_WRITE_FORBIDDEN",
+        "CHAT_ADMIN_REQUIRED",
+        "USER_PRIVACY_RESTRICTED",
+        "ChannelPrivateError",
+        "ChatForbiddenError",
+        "UserNotParticipantError",
+        "ChannelBannedError",
+        "UserBannedInChannelError",
+        "ChatWriteForbiddenError",
+        "ChatAdminRequiredError",
+        "UserPrivacyRestrictedError",
+    }
+)
+_FLOOD_RPC = frozenset({"PEER_FLOOD", "PeerFloodError", "SlowModeWaitError"})
+
+
+def classify_error(error: BaseException, prefix: Any = None) -> dict:
+    """Map an exception (and formatter prefix) to the structured error fields.
+
+    Pure and text-free: only exception types and constant Telegram error names are
+    used, so the result holds nothing a caller or a chat can influence.
+    """
+    if isinstance(error, AliasNeedsUser):
+        return {"kind": "invalid_argument", "needs_user": True}
+    if isinstance(error, (ValidationError, InvalidReferenceError)) or prefix == "VALIDATION-001":
+        return {"kind": "invalid_argument"}
+    if isinstance(error, ChatAccessDeniedError) or prefix == ErrorCategory.PRIVACY:
+        return {"kind": "forbidden_allowlist"}
+    if isinstance(error, EntityNotFoundError):
+        return {"kind": "not_found"}
+    if _is_flood_wait(error):
+        seconds = getattr(error, "seconds", None)
+        info: dict = {"kind": "flood"}
+        if isinstance(seconds, int) and seconds > 0:
+            info["retry_after"] = seconds
+        return info
+    if _is_schema_drift(error) or not isinstance(error, RPCError):
+        return {"kind": "internal"}
+    return _classify_rpc(error)
+
+
+def _classify_rpc(error: RPCError) -> dict:
+    name = _telegram_error_name(error)
+    keys = {name, type(error).__name__}
+    info: dict = {"rpc_error": name or type(error).__name__}
+    if keys & _FLOOD_RPC:
+        info["kind"] = "flood"
+        seconds = getattr(error, "seconds", None)
+        if isinstance(seconds, int) and seconds > 0:
+            info["retry_after"] = seconds
+    elif keys & _NOT_FOUND_RPC:
+        info["kind"] = "not_found"
+    elif keys & _PRIVATE_RPC:
+        info["kind"] = "private"
+    else:
+        info["kind"] = "internal"
+    return {"kind": info.pop("kind"), **info}
+
+
 def log_and_format_error(
     function_name: str,
     error: Exception,
@@ -1812,6 +1993,8 @@ def log_and_format_error(
     Returns:
         A user-friendly error message with an error code.
     """
+    record_tool_error(**classify_error(error, prefix))
+
     # An ask-the-user instruction is normal control flow, not a failure: return it
     # verbatim and never log the user's nickname at ERROR level.
     if isinstance(error, AliasNeedsUser):
@@ -2752,7 +2935,7 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
     for user in getattr(found, "users", None) or []:
         if getattr(user, "phone", None) == phone:
             return user if as_entity else utils.get_input_peer(user)
-    raise ValueError(
+    raise EntityNotFoundError(
         f"{identifier!r} is not in the contacts or the phone cache; a phone is never "
         "matched by display name."
     )
@@ -2881,7 +3064,7 @@ async def _resolve_with_retries(
             except ValueError as error:
                 last_error = error
 
-    raise ValueError(
+    raise EntityNotFoundError(
         f"Could not resolve {label} for {identifier!r}, "
         f"including marked variants {_marked_id_candidates(identifier)}"
     ) from last_error
@@ -2901,7 +3084,7 @@ def _digit_string_to_id(identifier: Union[int, str]) -> Union[int, str]:
     except ValueError:
         value = None
     if value is None or not (-(2**63) <= value <= 2**63 - 1):
-        raise ValueError("The id is out of the valid id range.")
+        raise InvalidReferenceError("The id is out of the valid id range.")
     return value
 
 
@@ -2921,7 +3104,7 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
         from_alias = identifier is not original
         if is_chat_allowlist_enabled() and isinstance(identifier, str):
             if _is_malformed_handle(identifier):
-                raise ValueError(
+                raise InvalidReferenceError(
                     f"{identifier!r} is not a username or an id; chat access is restricted "
                     "by an allowlist, so display names cannot be used."
                 )

@@ -1702,6 +1702,7 @@ async def join_chat_by_link(link: str, account: Optional[str] = None) -> str:
 
         blocked, invite_info = await _check_invite_allowed(cl, hash_part)
         if blocked:
+            record_tool_error("forbidden_allowlist")
             return blocked
 
         member_msg = await _already_member_message(cl, hash_part, invite_info)
@@ -1782,6 +1783,7 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
 
         blocked, invite_info = await _check_invite_allowed(cl, hash)
         if blocked:
+            record_tool_error("forbidden_allowlist")
             return blocked
 
         member_msg = await _already_member_message(cl, hash, invite_info)
