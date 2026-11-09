@@ -88,3 +88,10 @@ owner prefers zero side effects, keep `int()` for non-`+` strings.
 **Decided (owner, 2026-11-09): yes, strict numeric branch.** A chat parameter
 string becomes an int only when it fully matches the allowlist parser's numeric
 rule; other forms get the ask-the-user error.
+
+**Decided (owner, 2026-11-10):** round 3 review finding fixed in 0006
+(`_resolve` converts digit strings to ints in every mode); round 4 review: all
+three findings fixed in 0006; round 5: both findings fixed in 0006 (digit
+strings beyond 4300 digits are a clean range error / not allowed), and the
+alias-derived marked-id guessing note is recorded as a new task
+(`docs/tasks/0010-alias-id-marked-guessing.md`).

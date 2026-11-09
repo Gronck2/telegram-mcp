@@ -10,9 +10,19 @@ Fix at the single conversion point, `validate_single_id` in
 flows into the existing 0005 machinery (`deny_peer_param` ->
 `_peer_item_allowed` -> `resolve_entity` -> `_phone_lookup` -> entity check +
 `+`-phone entry). Round 2: `_lookup_callable` also routes phone strings through
-`_phone_lookup` when no allowlist is set (via `_phone_routed`), so a phone
-resolves only via the phone cache or contacts, never by a chat title. No other
-change to the resolvers or the allowlist matcher. The
+`_phone_lookup` with or without an allowlist (via `_phone_routed`), so a phone
+resolves only via the phone cache or contacts, never by a chat title.
+Round 3: `_resolve` converts digit strings to ints in every mode (via
+`_digit_string_to_id`), so a digit string is an id for every resolver call.
+Round 4: `_digit_string_to_id` raises a clean range error for values Telethon
+cannot pack (outside int64, or beyond int()'s 4300 digits), and
+`get_participants` / `get_recent_actions` (`telegram_mcp/tools/groups.py`)
+always go through `resolve_input_entity`, with or without an allowlist.
+Round 5: a digit string beyond 4300 digits matches the numeric regex but `int()`
+raises; `validate_single_id` now returns the same "ID is out of the valid
+integer range." error as for int64 overflow, and `_identifier_matches_allowlist`
+treats an un-convertible digit string as not allowed instead of raising. The
+allowlist matcher is otherwise unchanged. The
 numeric branch is tightened to the same `_NUMERIC_CHAT_ID_RE` the allowlist
 code uses, so both sides agree on what an id string is.
 
@@ -45,7 +55,8 @@ code uses, so both sides agree on what an id string is.
 
 ## Files likely touched
 
-`telegram_mcp/runtime.py`, `tests/test_validate_id_phone.py` (new),
+`telegram_mcp/runtime.py`, `telegram_mcp/tools/groups.py` (round 4),
+`tests/test_validate_id_phone.py` (new, plus later round test files),
 `tests/test_validation.py` (if existing cases need adjusting),
 `README.md`, `docs/arch/overview.md`.
 
@@ -61,6 +72,9 @@ code uses, so both sides agree on what an id string is.
   phones too; fine, a `+` is an explicit phone marker.
 - Strict numeric regex is a small extra behaviour change (see task, owner
   call, recommended); alternative is to keep `int()` for non-`+` strings.
+- Round 5 refuses the over-long digit string at the earliest point (the
+  decorator) and keeps the matcher defensive as a second line; the
+  decorator error text truncates the echoed value to 40 characters.
 - Phone lookup (with or without an allowlist) can fail where a numeric id would have
   succeeded (phone not in contacts or phone cache): intended, the user must
   use the id then.
