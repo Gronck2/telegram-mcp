@@ -19,7 +19,7 @@ import json
 import re
 import unicodedata
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Zero-width and invisible Unicode characters that can be used to hide content
 _INVISIBLE_CHARS = re.compile(
@@ -84,6 +84,13 @@ def _joiner_glues_text(text: str, index: int) -> bool:
 def sanitize_user_content(
     text: Optional[str], max_length: int = 4096, *, preserve_emoji: bool = False
 ) -> str:
+    """Sanitize user-controlled text content (see sanitize_user_content_checked)."""
+    return sanitize_user_content_checked(text, max_length, preserve_emoji=preserve_emoji)[0]
+
+
+def sanitize_user_content_checked(
+    text: Optional[str], max_length: int = 4096, *, preserve_emoji: bool = False
+) -> Tuple[str, bool]:
     """Sanitize user-controlled text content before returning in tool results.
 
     - Returns "[empty]" for None / empty input
@@ -96,9 +103,12 @@ def sanitize_user_content(
 
     This does NOT attempt keyword-based injection detection (too brittle).
     The real defence is the structural JSON boundary in tool results.
+
+    Returns (sanitized text, clipped); clipped is True only when the length check cut
+    the text, so callers never have to sniff the "[truncated]" marker.
     """
     if not text:
-        return "[empty]"
+        return "[empty]", False
 
     cleaned = []
     for i, ch in enumerate(text):
@@ -123,13 +133,13 @@ def sanitize_user_content(
     result = result.strip()
 
     if not result:
-        return "[empty]"
+        return "[empty]", False
 
     # Truncate
     if len(result) > max_length:
-        result = result[:max_length] + "... [truncated]"
+        return result[:max_length] + "... [truncated]", True
 
-    return result
+    return result, False
 
 
 def sanitize_name(text: Optional[str], max_length: int = 256) -> str:

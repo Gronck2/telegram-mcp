@@ -227,3 +227,42 @@ class TestFormatToolResult:
     def test_unserializable_value_raises_type_error(self):
         with pytest.raises(TypeError, match="not JSON serializable"):
             format_tool_result([{"bad": object()}])
+
+
+class TestSanitizeChecked:
+    EDGE = [
+        None,
+        "",
+        "   ",
+        "plain",
+        "a\x00b\x07c",
+        "x​y",
+        "\U0001f468‍\U0001f469‍\U0001f467",
+        "\n\n\n\n\nmany",
+        "a" * 10,
+        "a" * 11,
+        "a" * 5000,
+        "ends... [truncated]",
+    ]
+
+    @pytest.mark.parametrize("text", EDGE)
+    @pytest.mark.parametrize("max_length", [4096, 10, 1])
+    @pytest.mark.parametrize("emoji", [False, True])
+    def test_wrapper_matches_checked(self, text, max_length, emoji):
+        from sanitize import sanitize_user_content_checked
+
+        out, _ = sanitize_user_content_checked(text, max_length, preserve_emoji=emoji)
+        assert sanitize_user_content(text, max_length, preserve_emoji=emoji) == out
+
+    def test_golden_values(self):
+        assert sanitize_user_content("a" * 11, 10) == "a" * 10 + "... [truncated]"
+        assert sanitize_user_content("a" * 10, 10) == "a" * 10
+        assert sanitize_user_content(None) == "[empty]"
+
+    def test_flag_only_on_clip(self):
+        from sanitize import sanitize_user_content_checked
+
+        assert sanitize_user_content_checked("a" * 11, 10)[1] is True
+        assert sanitize_user_content_checked("a" * 10, 10)[1] is False
+        assert sanitize_user_content_checked("x... [truncated]")[1] is False
+        assert sanitize_user_content_checked(None) == ("[empty]", False)
