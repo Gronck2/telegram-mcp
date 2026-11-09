@@ -3125,19 +3125,21 @@ async def get_history(
 
 
 MAX_BATCH_IDS = 100
+MAX_MESSAGE_ID = 2**31 - 1
 
 
 def _parse_batch_ids(message_ids):
     """Validate get_messages_by_ids input.
 
     Returns (ids, error): ids are distinct positive ints in first-seen order; error
-    is a ready-to-return message or None.
+    is a ready-to-return message or None. Ids are int32 on the wire, so 1..2147483647.
     """
+    bad = f"Error: message_ids must be a non-empty list of integers in 1..{MAX_MESSAGE_ID}."
     if not isinstance(message_ids, (list, tuple)) or not message_ids:
-        return None, "Error: message_ids must be a non-empty list of positive integers."
+        return None, bad
     for item in message_ids:
-        if isinstance(item, bool) or not isinstance(item, int) or item < 1:
-            return None, "Error: message_ids must be a non-empty list of positive integers."
+        if isinstance(item, bool) or not isinstance(item, int) or not 1 <= item <= MAX_MESSAGE_ID:
+            return None, bad
     ids = list(dict.fromkeys(message_ids))
     if len(ids) > MAX_BATCH_IDS:
         return None, f"Error: at most {MAX_BATCH_IDS} message ids per call."
@@ -3173,7 +3175,7 @@ def _split_batch(raw, ids):
 @validate_id("chat_id")
 async def get_messages_by_ids(
     chat_id: Union[int, str],
-    message_ids: list[int],
+    message_ids: list[StrictInt],
     account: Optional[str] = None,
 ) -> str:
     """
@@ -3183,7 +3185,10 @@ async def get_messages_by_ids(
 
     Args:
         chat_id: The ID or username of the chat.
-        message_ids: Message ids to fetch: a non-empty list of integers >= 1, at most 100
+        message_ids: Message ids to fetch: a non-empty list of integers in
+                     1..2147483647 (strict: strings, booleans and floats are rejected;
+                     a JSON-encoded string such as "[1,2]" is still decoded to a list
+                     by the MCP framework), at most 100
                      distinct ids (duplicates are fetched once).
 
     The response is {"results": [...], "missing_ids": [...]}. "results" holds the found

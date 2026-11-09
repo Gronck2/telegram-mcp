@@ -335,23 +335,48 @@ async def test_mcp_handler_rejects_bad_input_without_network(monkeypatch, bad, s
 
 
 @pytest.mark.asyncio
-async def test_mcp_boundary_lax_coercion_is_documented_behaviour(monkeypatch):
-    """FINDING: the pydantic schema layer coerces before _parse_batch_ids runs, so the
-    strict rule (no strings / bools / floats) only holds for direct calls. Over MCP:
-    ["7763"] -> [7763], [1.0] -> [1], [true] -> [1], '[1,2]' (JSON string) -> [1, 2].
-    None of these crash; pin the behaviour so a switch to StrictInt is a visible change."""
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize("given", [["7763"], [1.0], [True], [2**31], [2**40]])
+async def test_mcp_boundary_is_strict(monkeypatch, given, structured):
+    """list[StrictInt]: no str/float/bool item coercion over MCP;
+    ids above int32 are refused before any network call."""
     stub = _Stub([_chan_msg(1), _chan_msg(2), _chan_msg(7763)])
     _real_path(monkeypatch, stub)
-    for given, sent in (
-        (["7763"], [7763]),
-        ([1.0], [1]),
-        ([True], [1]),
-        ("[1,2]", [1, 2]),
-    ):
-        result = await _call(chat_id=CHAT, message_ids=given, account="one")
-        assert not result.isError
-        assert json.loads(result.content[0].text)["missing_ids"] == []
-        assert stub.calls[-1] == sent
+    if structured:
+        monkeypatch.setenv("TELEGRAM_STRUCTURED_ERRORS", "1")
+    result = await _call(chat_id=CHAT, message_ids=given, account="one")
+    assert stub.calls == []
+    if structured:
+        assert result.isError
+        assert result.meta == {META: {"kind": "invalid_argument"}}
+    else:
+        assert result.content[0].text.startswith(("Error", "Error executing tool"))
+
+
+@pytest.mark.asyncio
+async def test_mcp_json_string_argument_is_preparsed_by_fastmcp(monkeypatch):
+    """Known limit: FastMCP's pre_parse_json turns the string '[1,2]' into a list before
+    validation, and its items are real ints, so StrictInt accepts it. Preventing that needs
+    runtime.py changes; pinned so a change is visible."""
+    stub = _Stub([_chan_msg(1), _chan_msg(2)])
+    _real_path(monkeypatch, stub)
+    result = await _call(chat_id=CHAT, message_ids="[1,2]", account="one")
+    assert not result.isError
+    assert stub.calls == [[1, 2]]
+
+
+@pytest.mark.asyncio
+async def test_int32_upper_bound(monkeypatch):
+    stub = _Stub([_chan_msg(2**31 - 1)])
+    _real_path(monkeypatch, stub)
+    result = await _call(chat_id=CHAT, message_ids=[2**31 - 1], account="one")
+    assert not result.isError
+    assert stub.calls == [[2**31 - 1]]
+    assert json.loads(result.content[0].text)["missing_ids"] == []
+    # direct call: refused pre-network as invalid_argument
+    out = await messages.get_messages_by_ids(chat_id=CHAT, message_ids=[2**31], account="one")
+    assert out.startswith("Error") and "2147483647" in out
+    assert stub.calls == [[2**31 - 1]]
 
 
 # --- 4. output --------------------------------------------------------------------------

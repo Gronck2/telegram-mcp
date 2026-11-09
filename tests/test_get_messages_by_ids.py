@@ -15,7 +15,7 @@ DATE = datetime(2026, 10, 5, tzinfo=timezone.utc)
 CHANNEL_ID = 1234567890
 CHAT = -1001234567890
 META = "telegram-mcp/error"
-INVALID_TEXT = "Error: message_ids must be a non-empty list of positive integers."
+INVALID_TEXT = "Error: message_ids must be a non-empty list of integers in 1..2147483647."
 
 
 def _msg(msg_id, text=None, sender=None, topic=None):

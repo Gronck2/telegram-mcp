@@ -134,7 +134,7 @@ flip the default: `docs/adr/0003-structured-tool-errors.md`.
 ## get_messages_by_ids
 
 Read-only batch fetch of one chat's messages by id (`message_ids`: a non-empty list of
-ints >= 1, at most 100 distinct; duplicates are dropped keeping the first occurrence).
+strict ints in 1..2^31-1, at most 100 distinct; the schema is `list[StrictInt]`, so string/bool/float items are rejected; FastMCP still decodes a JSON-string argument like `"[1,2]"` into a list before validation; duplicates are dropped keeping the first occurrence).
 Bad input is refused before any network call as `invalid_argument`. One
 `get_messages(entity, ids=[...])` call; Telethon's answer is paired with the request by
 message id, so a `None`, a `MessageEmpty` or an unrequested id never lands on the wrong
