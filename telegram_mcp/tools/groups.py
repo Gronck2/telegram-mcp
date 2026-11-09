@@ -340,7 +340,12 @@ async def get_participants(
         skip = (page - 1) * page_size
         participants = []
         has_more = False
-        async for participant in cl.iter_participants(chat_id, limit=skip + page_size + 1):
+        # Under an allowlist the string was matched as a username: resolve it the same way
+        # instead of letting Telethon look it up by display name.
+        target = (
+            await resolve_input_entity(chat_id, cl) if is_chat_allowlist_enabled() else chat_id
+        )
+        async for participant in cl.iter_participants(target, limit=skip + page_size + 1):
             if skip:
                 skip -= 1
                 continue
@@ -1826,9 +1831,12 @@ async def get_recent_actions(chat_id: Union[int, str], account: Optional[str] = 
     try:
         cl = get_client(account)
         await ensure_connected(cl)
+        channel = (
+            await resolve_input_entity(chat_id, cl) if is_chat_allowlist_enabled() else chat_id
+        )
         result = await cl(
             functions.channels.GetAdminLogRequest(
-                channel=chat_id,
+                channel=channel,
                 q="",
                 events_filter=None,
                 admins=[],
