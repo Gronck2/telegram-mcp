@@ -930,19 +930,24 @@ Fallback kinds for Telegram RPC errors outside the curated sets: any
 `FloodError` (FloodWait, FloodPremiumWait, FloodTestPhoneWait, ...) is `flood`
 with `retry_after`; other 400-class errors are `invalid_argument`, 403-class
 errors are `private`, everything else is `internal`; `rpc_error` always carries
-the constant name (at most 64 characters). FastMCP-made failures with nothing
-recorded (input validation, unknown tool) are `invalid_argument`.
+the constant name (at most 64 characters). FastMCP's own rejections (arguments
+failing schema validation, unknown tool) are `invalid_argument`; any other failure
+that nothing recorded is classified from its cause (`internal` when generic).
 
 Coverage: every failure that goes through `log_and_format_error`, the account
 and allowlist guards, the timeout, and the tools' early-return refusals
-("Error: ...", "Cannot ...", "Invalid ...", "Failed ...") are recorded
-(the refusals by their meaning: bad input, missing object, missing rights,
-allowlist, internal). Known gap: informational or partial outcomes are
-deliberately left as plain successes, namely empty results ("No ... found"),
-idempotent no-ops ("already ..."), per-item errors inside a successful payload,
-and "Cannot export message link for this entity type" (`export_message_link`).
-Any other plain-text refusal added later stays a success until it calls
-`record_tool_error`.
+(with or without an "Error:" prefix) are recorded, by their meaning: bad input,
+missing object, missing rights, allowlist, internal. This includes the file-path
+security refusals (`invalid_argument`), expired or invalid invites (`not_found`),
+the `resolve_phone` rate limit (`flood` with `retry_after`; a broken limiter
+configuration is `internal`), and every Telegram RPC error a tool catches (kind
+and `rpc_error` always come from the classifier; `USER_NOT_MUTUAL_CONTACT` and
+`USER_IS_BLOCKED` are `private`). Known gaps, left as plain successes on purpose:
+the JSON refusals of `premium_required_result` (`send_message`, `edit_message`,
+`transcribe_voice`), the `saved: false` payloads of `set_contact_alias`, empty
+results ("No ... found", page 1 of nothing), idempotent no-ops ("already ...")
+and per-item errors inside a successful payload. Any other plain-text refusal
+added later stays a success until it calls `record_tool_error`.
 
 ## Docker
 

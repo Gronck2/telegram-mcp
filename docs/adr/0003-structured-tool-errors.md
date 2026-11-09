@@ -36,11 +36,27 @@ every consumer of the live deployment.
   `FloodError` is `flood` (with `retry_after` when `seconds` is set),
   `BadRequestError` is `invalid_argument`, `ForbiddenError` is `private`,
   anything else `internal`; `rpc_error` keeps the constant name, capped at 64
-  characters. FastMCP-made errors with nothing recorded are `invalid_argument`.
-  Early-return refusals in tools call `record_tool_error` with a kind chosen by
-  meaning. Known gap, left as plain successes on purpose: empty results,
-  idempotent no-ops ("already ..."), per-item errors in a successful payload,
-  and `export_message_link` for non-channel entities. Two call sites pass
+  characters. `USER_NOT_MUTUAL_CONTACT` and `USER_IS_BLOCKED` ("they blocked
+  us" means no access) are `private`. Early-return refusals in tools call
+  `record_tool_error` with a kind chosen by meaning, including the file-path
+  security refusals (`invalid_argument`, recorded in the path helpers whose
+  callers all return the text at once), expired/invalid invites (`not_found`),
+  the `resolve_phone` limiter (`flood` with `retry_after`; a broken limiter
+  config or state file is `internal`), helper-returned refusals (recorded at the
+  caller or, where the kind depends on the reason, in the helper) and inline
+  button refusals (a URL or copy button hands over its URL/text: an answer, not
+  an error). RPC `except` handlers record `classify_error(e)` so kind and
+  `rpc_error` always agree with the classifier.
+  A tool failure nothing recorded (an escaped exception or a raw `ToolError`) is
+  classified from its cause (`internal` for a generic one, the classifier's
+  answer for an RPC error) in single-account and fan-out mode alike; only
+  FastMCP's own rejections (arguments failing schema validation, unknown tool)
+  are `invalid_argument`. Deliberate gaps, left as plain successes on purpose:
+  the `premium_required_result` JSON refusals (`send_message`, `edit_message`,
+  `transcribe_voice`), the `set_contact_alias` `saved: false` payloads, empty
+  results ("No ... found", page 1 of nothing), idempotent no-ops ("already
+  ...", delete of an already deleted folder) and per-item errors inside a
+  successful payload. Two call sites pass
   `log_and_format_error` arguments in the wrong order (`resolve_username`,
   `export_unread_messages`); their text is kept and they record the
   classification explicitly.
