@@ -70,3 +70,14 @@ Keep the stale-alias wording behaviour unchanged. Details in the plan.
 2. Out of scope, FYI only: a plain positive id typed by the user still gets the
    marked fallback under an allowlist too (task says keep it). Not a decision
    for this task; mention only if the owner wants a separate hardening task.
+
+## Decisions (coordinator on the owner's behalf, 2026-11-10)
+
+- Decision 1: option A, change only `_resolve` (treat an `AliasID` as
+  alias-derived). Making `apply_alias` return an `AliasID` for
+  `tools/events.py` (`_wait_target` / `wait_for_events`) is a follow-up task,
+  not part of 0010.
+- The order of entity resolution relative to the chat-allowlist check does not
+  change.
+- Deep review is mandatory (peer resolution is the area of the task 0006 bug
+  where the allowlist looked at a different peer).
