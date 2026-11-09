@@ -379,6 +379,22 @@ async def test_int32_upper_bound(monkeypatch):
     assert stub.calls == [[2**31 - 1]]
 
 
+@pytest.mark.asyncio
+async def test_published_schema_is_plain_integer_array():
+    """ListToolsRequest: StrictInt must not leak surprising constructs into the schema."""
+    from mcp.types import ListToolsRequest
+
+    handler = runtime.mcp._mcp_server.request_handlers[ListToolsRequest]
+    listed = (await handler(ListToolsRequest(method="tools/list"))).root.tools
+    tool = [t for t in listed if t.name == "get_messages_by_ids"]
+    assert len(tool) == 1
+    prop = tool[0].inputSchema["properties"]["message_ids"]
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "integer"}
+    assert "message_ids" in tool[0].inputSchema["required"]
+    assert not {"anyOf", "oneOf", "allOf", "$ref"} & set(prop)
+
+
 # --- 4. output --------------------------------------------------------------------------
 
 
