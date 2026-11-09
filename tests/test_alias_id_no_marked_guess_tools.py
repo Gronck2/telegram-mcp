@@ -8,6 +8,7 @@ import json
 
 import pytest
 from mcp.types import CallToolRequest, CallToolRequestParams
+from telethon import types
 
 from telegram_mcp import runtime
 from telegram_mcp.tools import chats, groups, messages  # also registers the real tools
@@ -372,3 +373,49 @@ async def test_negative_and_username_references_unaffected():
     client = Recorder({CHANNEL, "someone"})
     assert await runtime.resolve_entity(CHANNEL, client) == f"entity:{CHANNEL}"
     assert await runtime.resolve_entity("someone", client) == "entity:someone"
+
+
+# --- 4. saving a new alias against an existing alias ---------------------------------------
+
+
+class UserRecorder(Recorder):
+    """Like Recorder, but known ids resolve to real Telethon users."""
+
+    def _look(self, identifier):
+        self.lookups.append(identifier)
+        if identifier in self.known:
+            return types.User(id=identifier, first_name="Real", access_hash=1)
+        raise ValueError(f"Could not find the input entity for {identifier!r}")
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_stale_existing_alias_saves_nothing(monkeypatch):
+    from telegram_mcp.tools import contacts
+
+    client = use(monkeypatch, UserRecorder({CHANNEL, GROUP}))
+    before = runtime.load_aliases()
+    out = json.loads(await contacts.set_contact_alias("новый ник", WORDING))["results"]
+    assert out["saved"] is False
+    assert out["reason"] == "target_not_found"
+    assert client.touched_marked() == []
+    assert runtime.load_aliases() == before
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_plain_digit_target_keeps_fallback(monkeypatch):
+    from telegram_mcp.tools import contacts
+
+    client = use(monkeypatch, UserRecorder({GROUP}))
+    out = json.loads(await contacts.set_contact_alias("новый ник", str(ID)))["results"]
+    assert out["saved"] is True
+    assert GROUP in client.lookups
+
+
+@pytest.mark.asyncio
+async def test_set_contact_alias_valid_existing_alias_saves(monkeypatch):
+    from telegram_mcp.tools import contacts
+
+    use(monkeypatch, UserRecorder({ID}))
+    out = json.loads(await contacts.set_contact_alias("новый ник", WORDING))["results"]
+    assert out["saved"] is True
+    assert any(rec["id"] == ID for rec in runtime.load_aliases().values())

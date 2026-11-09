@@ -41,6 +41,25 @@ four findings are correct.
   allowlist's judgement of the alias id. This is why the fix matters beyond
   convenience.
 
+## Follow-ups and audit of direct `apply_alias` callers
+
+Audit of `apply_alias(...)` callers outside `runtime.py` (round 1 deep review):
+
+- `tools/contacts.py` `set_contact_alias`: resolves the target and persists the
+  resulting marked id as a new alias, so a guessed chat would be saved
+  permanently. Fixed in 0010: an int returned by `apply_alias` is wrapped as
+  `AliasID(target, chat_id)` at the call site (the `apply_alias` contract is
+  unchanged), so `_resolve` skips the guess and a stale alias gives the existing
+  `target_not_found` refusal.
+- `tools/events.py` `_wait_target` (L94) and `wait_for_events` (L516): `apply_alias`
+  yields a plain int that `resolve_entity` may still guess for. They only pick
+  the chat to wait on and feed an allowlist check; they neither send nor save.
+  Deferred to a follow-up task (events.py).
+- `runtime.py` `validate_single_id` (L2193) already wraps the result in `AliasID`;
+  `_resolve` (L3161) is the fixed resolver itself.
+
+No other direct callers exist.
+
 ## Suggested approach
 
 In `_resolve`, treat an `AliasID` as alias-derived:

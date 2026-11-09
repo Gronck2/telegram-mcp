@@ -878,7 +878,11 @@ async def set_contact_alias(
         # lookalike matcher would let one wrong guess become a permanent mapping.
         if isinstance(chat_id, str) and not is_handle_like(chat_id):
             target = apply_alias(chat_id)
-            if not isinstance(target, int):
+            if isinstance(target, int):
+                # The stored id is exact: do not let resolution guess marked variants
+                # of it and then save an unrelated chat as the new alias.
+                target = AliasID(target, chat_id)
+            else:
                 return format_tool_result(
                     {
                         "saved": False,
