@@ -203,7 +203,7 @@ make the equivalent changes by hand (rebuild and restart are the owner's call):
 2. Server roots empty (open). Today client roots decide, so on a shared
    HTTP/SSE deployment without server roots any caller still gets any path.
    Options: (a) keep, document in README that shared SSE/HTTP deployments must
-   set `TELEGRAM_ALLOWED_ROOTS` or `TELEGRAM_SERVER_ROOTS_ONLY`; (b) (a) plus a
+   set `TELEGRAM_ALLOWED_ROOTS` (optionally with `TELEGRAM_SERVER_ROOTS_ONLY`); (b) (a) plus a
    startup warning in `runner.py` when the transport is not stdio, no server
    roots are set and file tools are exposed; (c) refuse file tools over
    non-stdio transports without server roots (breaking). Recommendation: (b)

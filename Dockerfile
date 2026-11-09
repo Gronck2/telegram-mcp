@@ -6,7 +6,8 @@ FROM python:3.13-alpine AS base
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONNOUSERSITE=1
 
 # =============================================================================
 # Builder stage: build wheels / dependencies

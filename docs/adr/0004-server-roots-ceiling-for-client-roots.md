@@ -41,7 +41,7 @@ image let `appuser` write. Code execution on the next restart would follow.
 - A client rooted at a parent of the server root must change its root, or the
   operator adds the folder to the server roots.
 - Shared HTTP/SSE deployments without server roots keep the old exposure and
-  must set `TELEGRAM_ALLOWED_ROOTS` or `TELEGRAM_SERVER_ROOTS_ONLY=1`.
+  must set `TELEGRAM_ALLOWED_ROOTS` (optionally with `TELEGRAM_SERVER_ROOTS_ONLY=1`).
 - The error log (`/app/mcp_errors.log`) falls back to console output on the
   read-only root; the audit log goes to the state volume via
   `TELEGRAM_AUDIT_LOG`.

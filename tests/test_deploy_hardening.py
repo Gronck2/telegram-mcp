@@ -12,8 +12,15 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _read(name: str) -> str:
+    path = ROOT / name
+    if not path.exists():
+        pytest.skip(f"{name} is not part of this image (development stage)")
+    return path.read_text(encoding="utf-8")
+
+
 def _production_stage() -> str:
-    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    text = _read("Dockerfile")
     parts = re.split(r"^FROM .* AS production\s*$", text, flags=re.MULTILINE)
     assert len(parts) == 2, "Dockerfile needs a production stage"
     return parts[1]
@@ -32,10 +39,11 @@ def test_production_image_code_is_not_owned_by_appuser():
 
 
 def test_bytecode_cannot_be_written_or_swapped():
-    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    text = _read("Dockerfile")
     base = text.split("AS builder")[0]
     assert "PYTHONDONTWRITEBYTECODE=1" in base  # inherited by every stage
-    ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "PYTHONNOUSERSITE=1" in base  # no .pth from a writable user site
+    ignore = _read(".dockerignore").splitlines()
     for pattern in ("**/__pycache__/", "**/*.pyc", ".env", ".env.*", ".venv/", ".git/"):
         assert pattern in ignore
     assert any(line.startswith("**/*.session") for line in ignore)
@@ -44,7 +52,7 @@ def test_bytecode_cannot_be_written_or_swapped():
 def test_dockerignore_keeps_what_the_development_stage_copies():
     ignore = [
         line.strip()
-        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        for line in _read(".dockerignore").splitlines()
         if line.strip() and not line.startswith("#")
     ]
     for needed in ("tests", "pyproject.toml", "requirements.txt", "main.py", "telegram_mcp"):
@@ -53,7 +61,7 @@ def test_dockerignore_keeps_what_the_development_stage_copies():
 
 def _compose():
     yaml = pytest.importorskip("yaml")
-    data = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    data = yaml.safe_load(_read("docker-compose.yml"))
     return data, data["services"]["telegram-mcp"]
 
 

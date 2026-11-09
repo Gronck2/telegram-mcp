@@ -227,6 +227,10 @@ _ROOTS_GUARDED_TOOLS = (
     "set_profile_photo",
     "edit_chat_photo",
     "download_media",
+    "export_chat_history",
+    "export_unread_messages",
+    "open_photo",
+    "preview_custom_emoji",
 )
 
 
@@ -244,7 +248,7 @@ def _warn_unrooted_network_transport(transport: str) -> None:
     print(
         f"WARNING: {transport} transport has no authentication and no server allowed "
         "roots are set; every client's MCP Roots decide file access. Set "
-        "TELEGRAM_ALLOWED_ROOTS (or TELEGRAM_SERVER_ROOTS_ONLY=1).",
+        "TELEGRAM_ALLOWED_ROOTS (optionally with TELEGRAM_SERVER_ROOTS_ONLY=1).",
         file=sys.stderr,
     )
 

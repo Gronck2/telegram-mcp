@@ -3466,7 +3466,7 @@ def _coerce_paths_from_list_roots_validation_error(error: Exception) -> List[Pat
             # Unix absolute path, or Windows drive path like C:\...
             continue
         try:
-            recovered.append(Path(candidate).expanduser().resolve())
+            recovered.append(Path(candidate).expanduser().resolve(strict=True))
         except Exception:
             continue
     return _dedupe_paths(recovered)
@@ -3639,6 +3639,17 @@ async def _ensure_allowed_roots(
     return roots, None
 
 
+def _within_server_roots(path: Path) -> bool:
+    """Defense in depth: with server roots set, the sink path must lie inside one.
+
+    Independent of the (narrowed) client roots, which may have been swapped for a
+    symlink between narrowing and the sink check.
+    """
+    if not SERVER_ALLOWED_ROOTS:
+        return True
+    return _path_is_within_any_root(path, SERVER_ALLOWED_ROOTS)
+
+
 async def _resolve_readable_file_path(
     *,
     raw_path: str,
@@ -3662,7 +3673,7 @@ async def _resolve_readable_file_path(
     except FileNotFoundError:
         return None, _path_refusal(f"File not found: {raw_path}")
 
-    if not _path_is_within_any_root(candidate, roots):
+    if not _path_is_within_any_root(candidate, roots) or not _within_server_roots(candidate):
         return None, _path_refusal("Path is outside allowed roots.")
     if not candidate.is_file():
         return None, _path_refusal(f"Path is not a file: {candidate}")
@@ -3712,8 +3723,11 @@ async def _resolve_writable_file_path(
 
     candidate = candidate.resolve(strict=False)
     parent = candidate.parent.resolve(strict=False)
-    if not _path_is_within_any_root(candidate, roots) or not _path_is_within_any_root(
-        parent, roots
+    if (
+        not _path_is_within_any_root(candidate, roots)
+        or not _path_is_within_any_root(parent, roots)
+        or not _within_server_roots(candidate)
+        or not _within_server_roots(parent)
     ):
         return None, _path_refusal("Path is outside allowed roots.")
 

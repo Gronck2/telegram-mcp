@@ -106,7 +106,7 @@ branches.
   roots are a ceiling, client roots narrow them; ancestors are dropped; the
   empty-intersection deny-all and that the fallback flag does not apply to
   it; with no server roots the client roots decide, so shared HTTP/SSE
-  deployments must set `TELEGRAM_ALLOWED_ROOTS` or `TELEGRAM_SERVER_ROOTS_ONLY`.
+  deployments must set `TELEGRAM_ALLOWED_ROOTS` (optionally with `TELEGRAM_SERVER_ROOTS_ONLY`).
   Adjust the "Clients on another machine" paragraph (:793-794) and the
   troubleshooting line (:1102) as needed. README is not a security path.
 - `docs/arch/overview.md` item 3 (File roots, :97): one or two sentences

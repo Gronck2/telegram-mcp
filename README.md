@@ -761,8 +761,8 @@ Security behavior:
   `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK` does not apply to that case. The same
   narrowing covers the bare-path recovery below. With no server roots, the
   client Roots decide as before, so on a shared HTTP/SSE deployment (the
-  endpoint is unauthenticated) always set `TELEGRAM_ALLOWED_ROOTS` or
-  `TELEGRAM_SERVER_ROOTS_ONLY=1`; the server logs a startup warning otherwise.
+  endpoint is unauthenticated) always set `TELEGRAM_ALLOWED_ROOTS`
+  (optionally with `TELEGRAM_SERVER_ROOTS_ONLY=1`); the server logs a startup warning otherwise.
   See `docs/adr/0004-server-roots-ceiling-for-client-roots.md`.
 - Some clients (notably Cursor) return workspace roots as bare absolute paths
   instead of `file://` URIs. That breaks MCP SDK validation of `list_roots`;

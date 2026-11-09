@@ -207,6 +207,17 @@ async def test_client_roots_narrow_server_allowlist(tmp_path, monkeypatch):
     assert error is None
     assert resolved == client_file.resolve()
 
+    # A client root outside the server root is dropped, not honoured.
+    outside_root = (tmp_path / "outside").resolve()
+    outside_root.mkdir()
+    (outside_root / "o.txt").write_text("o", encoding="utf-8")
+    ctx_outside = _DummyContext([types.Root(uri=outside_root.as_uri())])
+    assert await main._get_effective_allowed_roots(ctx_outside) == []
+    resolved, error = await main._resolve_readable_file_path(
+        raw_path=str(outside_root / "o.txt"), ctx=ctx_outside, tool_name="send_file"
+    )
+    assert resolved is None and error
+
 
 @pytest.mark.asyncio
 async def test_empty_client_roots_disable_file_tools(tmp_path, monkeypatch):
