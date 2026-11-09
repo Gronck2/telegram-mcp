@@ -922,7 +922,9 @@ to make failures machine-readable without changing any text:
 `CHAT_ADMIN_REQUIRED`, folded into `private`); `needs_user: true` marks an
 ask-the-user alias prompt (kind `invalid_argument`). For read-only tools fanned
 out over several accounts, `isError` is true only if every account failed, and
-`accounts` lists each failing account's kind. Success results and error text
+`accounts` lists each failing account's kind (for an escaped failure the
+failing account is recorded before the error propagates; accounts still running
+at that moment are not listed). Success results and error text
 are unchanged, and `_meta` never contains chat names, identifiers or message
 text. See `docs/adr/0003-structured-tool-errors.md`.
 

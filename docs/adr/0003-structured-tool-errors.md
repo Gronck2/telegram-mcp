@@ -62,7 +62,9 @@ every consumer of the live deployment.
   classification explicitly.
 - **Fan-out:** a read-only tool run over all accounts is `isError` only if
   every account failed; `accounts` lists each failing account's details either
-  way.
+  way. Fan-out stays fail-fast: for an escaped failure the failing account is
+  recorded before the error propagates; accounts still running at that moment
+  are not listed.
 - **Opt-in:** `TELEGRAM_STRUCTURED_ERRORS=1`, one switch for both `isError` and
   `_meta`. Default off; with it off nothing is recorded and results are
   unchanged. Enabling it on the live deployment is the owner's call. To flip

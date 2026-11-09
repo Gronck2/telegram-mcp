@@ -268,17 +268,17 @@ def fanout_probe():
 
 
 @pytest.mark.asyncio
-async def test_fanout_records_an_escaped_flood_wait_per_account(monkeypatch, fanout_probe):
+async def test_fanout_records_the_first_escaped_flood_wait(monkeypatch, fanout_probe):
     monkeypatch.setenv("TELEGRAM_STRUCTURED_ERRORS", "1")
     monkeypatch.setattr(runtime, "clients", {"a": fake(), "b": fake()})
     result = await call("zz_round5_probe")
     assert result.isError is True
     meta = result.meta[META]
-    assert meta["accounts"] == [
-        {"kind": "flood", "retry_after": 31, "account": "a"},
-        {"kind": "internal", "account": "b"},
-    ]
-    assert meta["kind"] == "internal"
+    # fail-fast: "a" fails first and is recorded before the error propagates; "b" was
+    # still running, so it is not listed (and nothing wrong is).
+    assert meta["accounts"] == [{"kind": "flood", "retry_after": 31, "account": "a"}]
+    assert meta["kind"] == "flood"
+    assert meta["retry_after"] == 31
 
 
 @pytest.mark.asyncio

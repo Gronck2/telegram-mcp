@@ -124,7 +124,8 @@ With `TELEGRAM_STRUCTURED_ERRORS=1` a failed call gets `isError: true` and
 `_meta["telegram-mcp/error"] = {kind, retry_after?, rpc_error?, needs_user?,
 accounts?}`; text is untouched. Kinds: `invalid_argument`, `not_found`,
 `private`, `forbidden_allowlist`, `flood`, `timeout`, `internal`. A read-only
-fan-out is an error only if every account failed. With the switch off nothing
+fan-out is an error only if every account failed (an escaped failure records
+its account before it propagates; accounts still running are not listed). With the switch off nothing
 is recorded and results are byte-for-byte as before. Rationale and the plan to
 flip the default: `docs/adr/0003-structured-tool-errors.md`.
 

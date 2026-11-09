@@ -265,6 +265,14 @@ async def set_privacy_settings(
             )
         privacy_key = key_mapping[key]()
 
+        failure_recorded = []
+
+        def record_first_failure(**fields):
+            # The first failure stays authoritative (single-account _meta takes the last entry).
+            if not failure_recorded:
+                failure_recorded.append(True)
+                record_tool_error(**fields)
+
         async def input_users(identifiers):
             users = []
             for identifier in identifiers or []:
@@ -272,10 +280,10 @@ async def set_privacy_settings(
                     user = await resolve_entity(identifier, cl)
                 except Exception as resolve_err:
                     logger.warning("Could not resolve a requested privacy-rule user")
-                    record_tool_error(**classify_error(resolve_err))
+                    record_first_failure(**classify_error(resolve_err))
                     return None
                 if not isinstance(user, User):
-                    record_tool_error("not_found")
+                    record_first_failure(kind="not_found")
                     return None
                 if user.is_self:
                     # utils.get_input_user would give InputUserSelf, which has no user_id,
@@ -285,7 +293,7 @@ async def set_privacy_settings(
             return users
 
         allow = await input_users(allow_users)
-        disallow = await input_users(disallow_users) if allow is not None else None
+        disallow = await input_users(disallow_users)
         if allow is None or disallow is None:
             return "Error: Could not find a requested user; privacy settings were not changed."
 

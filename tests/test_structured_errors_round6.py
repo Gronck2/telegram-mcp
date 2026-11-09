@@ -6,9 +6,7 @@ CallToolResult text / isError / _meta for multi-account read-only calls where ac
 or hang at different times, cancellation, and the set_privacy_settings refusal text. The
 file imports only what exists on the base commit.
 
-Known, intended OFF differences (``with_account`` now lets every account finish before an
-escaped failure propagates so ``_meta`` can list each account) are listed in ``KNOWN_DIFF``;
-each is pinned at its HEAD value so a further drift fails.
+There are no known OFF differences: fan-out stays fail-fast exactly as on the base.
 """
 
 import asyncio
@@ -27,7 +25,6 @@ from telegram_mcp import runtime
 from telegram_mcp.tools import profile  # noqa: F401  (registers the tools)
 
 GOLDEN = Path(__file__).parent / "data" / "structured_errors_off_golden_fanout.json"
-KNOWN = Path(__file__).parent / "data" / "structured_errors_off_known_diff_fanout.json"
 RECORD = bool(os.environ.get("RECORD_STRUCTURED_GOLDEN"))
 TIMEOUT = 0.5
 
@@ -117,14 +114,7 @@ async def test_switch_off_fanout_result_matches_base(probe, name):
     assert elapsed <= BOUND, f"{name} took {elapsed:.2f}s"
     assert result.get("_meta") is None
     expected = json.loads(GOLDEN.read_text())[name]
-    if name in KNOWN_DIFF:
-        assert result == KNOWN_DIFF[name], name
-    else:
-        assert result == expected["result"], name
-
-
-# differences from the base commit, pinned at their HEAD value (filled from measurement)
-KNOWN_DIFF: dict = json.loads(KNOWN.read_text()) if KNOWN.exists() and not RECORD else {}
+    assert result == expected["result"], name
 
 
 @pytest.mark.asyncio
@@ -155,10 +145,7 @@ async def test_switch_off_cancellation_matches_base(probe, name, spec, cancel_af
         GOLDEN.write_text(json.dumps(recorded, indent=1, sort_keys=True, ensure_ascii=False))
         return
     assert elapsed <= cancel_after + 0.4
-    if name in KNOWN_DIFF:
-        assert outcome == KNOWN_DIFF[name], name
-    else:
-        assert outcome == json.loads(GOLDEN.read_text())[name]["result"], name
+    assert outcome == json.loads(GOLDEN.read_text())[name]["result"], name
 
 
 # --- set_privacy_settings: allow list fails to resolve, disallow list has entries -------
@@ -213,9 +200,32 @@ async def test_set_privacy_settings_off_text_matches_base(monkeypatch, case, all
         return
     expected = json.loads(GOLDEN.read_text())[key]
     assert text == expected["result"]
-    # Only the lookups differ from the base: the disallow list is no longer resolved
-    # (a wasted lookup) once the allow list failed.
-    if case.startswith("allow_unresolved"):
-        assert resolved == ["@nobody"]
-    else:
-        assert resolved == expected["resolved"]
+    assert resolved == expected["resolved"]
+
+
+@pytest.mark.asyncio
+async def test_set_privacy_settings_first_failure_stays_authoritative(monkeypatch):
+    from telethon import errors
+
+    monkeypatch.setenv("TELEGRAM_STRUCTURED_ERRORS", "1")
+    recorder = runtime._ErrorRecorder()
+    token = runtime._error_recorder.set(recorder)
+    resolved = []
+
+    async def fake_resolve(identifier, cl=None):
+        resolved.append(identifier)
+        if identifier == "@flooded":
+            raise errors.FloodWaitError(request=None, capture=31)
+        raise ValueError("No user has that username")
+
+    monkeypatch.setattr(profile, "get_client", lambda account=None: PrivacyClient())
+    monkeypatch.setattr(profile, "resolve_entity", fake_resolve)
+    try:
+        await profile.set_privacy_settings(
+            key="phone", allow_users=["@flooded"], disallow_users=["@nobody"]
+        )
+    finally:
+        runtime._error_recorder.reset(token)
+    assert resolved == ["@flooded", "@nobody"]  # same lookups as the base
+    meta, _ = runtime._error_meta(recorder, False)
+    assert meta == {"kind": "flood", "retry_after": 31}

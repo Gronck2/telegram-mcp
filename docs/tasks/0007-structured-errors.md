@@ -210,4 +210,6 @@ structuredContent, and the opt-in policy). Not created here.
    `create_group` and `set_privacy_settings` resolve failures classified
    (flood keeps `retry_after`), caption and transcription config refusals
    recorded, fan-out records unclassified per-account failures, docs list the
-   context overrides.
+   context overrides. Fan-out stays fail-fast as on the base: the failing
+   account is recorded before the error propagates; accounts still running at
+   that moment are not listed.
