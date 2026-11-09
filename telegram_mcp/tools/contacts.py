@@ -221,6 +221,7 @@ async def get_contact_chats(contact_id: Union[int, str], account: Optional[str] 
         # Get contact info
         contact = await resolve_entity(contact_id, cl)
         if not isinstance(contact, User):
+            record_tool_error("invalid_argument")
             return f"ID {contact_id} is not a user/contact."
 
         contact_name = sanitize_name(person_name(contact))
@@ -294,6 +295,7 @@ async def get_last_interaction(contact_id: Union[int, str], account: Optional[st
         # Get contact info
         contact = await resolve_entity(contact_id, cl)
         if not isinstance(contact, User):
+            record_tool_error("invalid_argument")
             return f"ID {contact_id} is not a user/contact."
 
         contact_name = sanitize_name(person_name(contact))
@@ -352,6 +354,16 @@ def normalize_phone(phone: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def _record_limiter_refusal(refusal: str) -> None:
+    """A rate limit is a flood refusal (retry_after seconds); a broken limiter
+    configuration or state file is the operator's problem, not the caller's (internal)."""
+    retry_after = getattr(refusal, "retry_after", 0)
+    if retry_after:
+        record_tool_error("flood", retry_after=retry_after)
+    else:
+        record_tool_error("internal")
+
+
 @mcp.tool(
     annotations=ToolAnnotations(title="Resolve Phone", openWorldHint=True, readOnlyHint=True)
 )
@@ -383,6 +395,7 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
         await ensure_connected(cl)
         refusal = _resolve_phone_limiter.reserve()
         if refusal:
+            _record_limiter_refusal(refusal)
             return refusal
         # Telethon 1.45 drops the per-call flood_sleep_threshold, so lower the client's own:
         # a silent sleep-and-retry would be a second, uncounted lookup. Until the lookup
@@ -405,8 +418,8 @@ async def resolve_phone(phone: str, account: Optional[str] = None) -> str:
         return str(result)
     except PhoneNotOccupiedError:
         return NO_PHONE_USER_MESSAGE
-    except PhoneNumberInvalidError:
-        record_tool_error("invalid_argument")
+    except PhoneNumberInvalidError as e:
+        record_tool_error(**classify_error(e))
         return (
             "Error: Telegram rejected this phone number as invalid. "
             "Pass it in international format with the country code."
@@ -574,6 +587,7 @@ async def add_contact(
             if result.imported:
                 return f"Contact {first_name} {last_name} added successfully."
             else:
+                record_tool_error("not_found")
                 return _import_failure_text("Contact not added. Response:", result)
         else:
             record_tool_error("invalid_argument")
@@ -597,6 +611,7 @@ async def add_contact(
                 if hasattr(result, "imported") and result.imported:
                     return f"Contact {first_name} {last_name} added successfully (alt method)."
                 else:
+                    record_tool_error("not_found")
                     return _import_failure_text(
                         "Contact not added. Alternative method response:", result
                     )
@@ -842,6 +857,7 @@ async def set_contact_alias(
         cl = get_client(account)
         key = alias_key(alias)
         if not key:
+            record_tool_error("invalid_argument")
             return "Alias must not be empty."
         if is_unshadowable_identifier(key):
             # An alias wins over Telethon's own lookup, so "me" or "bob" would

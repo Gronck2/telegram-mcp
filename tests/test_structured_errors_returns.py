@@ -161,6 +161,21 @@ def world(**extra):
     return ents
 
 
+_EMOJI_SET = SimpleNamespace(
+    set=SimpleNamespace(
+        id=1,
+        title="Dogs",
+        short_name="AnimatedDogs",
+        count=0,
+        emojis=True,
+        archived=False,
+        official=False,
+    ),
+    packs=[],
+    documents=[],
+)
+
+
 def fake(routes=None, **attrs):
     return Fake(routes=routes, entities=world(), **attrs)
 
@@ -365,6 +380,7 @@ def chats_pairs():
             "Cannot subscribe",
             ({"channel": 100}, lambda: fake({"JoinChannelRequest": None})),
             "Subscribed to",
+            extra={"rpc_error": "CHANNEL_PRIVATE"},
         ),
         Pair(
             "get_message_read_by",
@@ -380,6 +396,7 @@ def chats_pairs():
             ),
             '"count": 1',
             id="get_message_read_by-admin",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "get_message_read_by",
@@ -395,10 +412,11 @@ def chats_pairs():
             ),
             '"count": 1',
             id="get_message_read_by-not-participant",
+            extra={"rpc_error": "USER_NOT_PARTICIPANT"},
         ),
         Pair(
             "get_message_read_by",
-            "invalid_argument",
+            "not_found",
             (
                 {"chat_id": 100, "message_id": 1},
                 lambda: fake({"GetMessageReadParticipantsRequest": tg("PeerIdInvalidError")}),
@@ -410,6 +428,7 @@ def chats_pairs():
             ),
             '"count": 1',
             id="get_message_read_by-peer-invalid",
+            extra={"rpc_error": "PEER_ID_INVALID"},
         ),
         Pair(
             "get_message_link",
@@ -552,6 +571,7 @@ def contacts_pairs():
             ),
             "ResolvedPeer",
             id="resolve_phone-telegram-rejects",
+            extra={"rpc_error": "PHONE_NUMBER_INVALID"},
         ),
     ]
 
@@ -732,6 +752,7 @@ def groups_pairs():
             ),
             "Successfully invited",
             id="invite_to_group-whole-call-privacy",
+            extra={"rpc_error": "USER_PRIVACY_RESTRICTED"},
         ),
         Pair(
             "remove_user",
@@ -768,6 +789,7 @@ def groups_pairs():
             removed_ok,
             "removed from chat",
             id="remove_user-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "remove_user",
@@ -798,6 +820,7 @@ def groups_pairs():
             ({"chat_id": 100, "seconds": 0}, lambda: fake({"ToggleSlowModeRequest": None})),
             "Slow mode disabled",
             id="toggle_slow_mode-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "edit_admin_rights",
@@ -810,10 +833,11 @@ def groups_pairs():
             edit_ok,
             "Admin rights updated",
             id="edit_admin_rights-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "edit_admin_rights",
-            "invalid_argument",
+            "private",
             (
                 {**g100, "change_info": True},
                 lambda: fake({"EditAdminRequest": tg("RightForbiddenError")}),
@@ -822,6 +846,7 @@ def groups_pairs():
             edit_ok,
             "Admin rights updated",
             id="edit_admin_rights-right-forbidden",
+            extra={"rpc_error": "RIGHT_FORBIDDEN"},
         ),
         Pair(
             "edit_admin_rights",
@@ -842,6 +867,7 @@ def groups_pairs():
             "not mutual contacts",
             ({"group_id": 100, "user_id": 5}, lambda: fake({"EditAdminRequest": None})),
             "Successfully promoted",
+            extra={"rpc_error": "USER_NOT_MUTUAL_CONTACT"},
         ),
         Pair(
             "ban_user",
@@ -850,6 +876,7 @@ def groups_pairs():
             "not mutual contacts",
             (g100, lambda: fake({"EditBannedRequest": None})),
             "banned from chat",
+            extra={"rpc_error": "USER_NOT_MUTUAL_CONTACT"},
         ),
         Pair(
             "unban_user",
@@ -858,10 +885,11 @@ def groups_pairs():
             "not mutual contacts",
             (g100, lambda: fake({"EditBannedRequest": None})),
             "unbanned from chat",
+            extra={"rpc_error": "USER_NOT_MUTUAL_CONTACT"},
         ),
         Pair(
             "get_member_admin_status",
-            "private",
+            "invalid_argument",
             ({"chat_id": 42, "user_id": 5}, lambda: fake()),
             "supports only supergroups",
             (g100, lambda: fake({"GetParticipantRequest": participant})),
@@ -876,6 +904,7 @@ def groups_pairs():
             (g100, lambda: fake({"GetParticipantRequest": tg("UserNotParticipantError")})),
             "not-participant",
             id="get_member_admin_status-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "upgrade_group_to_supergroup",
@@ -897,6 +926,7 @@ def groups_pairs():
             ({"chat_id": 100}, lambda: fake()),
             "already a supergroup",
             id="upgrade_group-not-creator",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "edit_chat_about",
@@ -909,6 +939,7 @@ def groups_pairs():
             ({"chat_id": 100, "about": "x"}, lambda: fake({"EditChatAboutRequest": True})),
             "description updated",
             id="edit_chat_about-too-long",
+            extra={"rpc_error": "CHAT_ABOUT_TOO_LONG"},
         ),
         Pair(
             "edit_chat_about",
@@ -924,6 +955,7 @@ def groups_pairs():
             ),
             "already set",
             id="edit_chat_about-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "edit_chat_title",
@@ -1122,9 +1154,22 @@ def media_pairs(tmp_path_holder=None):
             "Invalid pack name",
             (
                 {"pack": "AnimatedDogs"},
+                lambda: fake({"GetStickerSetRequest": _EMOJI_SET}),
+            ),
+            "AnimatedDogs",
+        ),
+        Pair(
+            "get_custom_emoji_pack",
+            "invalid_argument",
+            (
+                {"pack": "AnimatedDogs"},
                 lambda: fake({"GetStickerSetRequest": tg("StickersetInvalidError")}),
             ),
             "not found or is invalid",
+            ({"pack": "AnimatedDogs"}, lambda: fake({"GetStickerSetRequest": _EMOJI_SET})),
+            "AnimatedDogs",
+            extra={"rpc_error": "STICKERSET_INVALID"},
+            id="get_custom_emoji_pack-set-invalid",
         ),
     ]
 
@@ -1207,10 +1252,11 @@ def messages_pairs():
             "admin privileges are required",
             (sg, lambda: fake({"DeleteHistoryRequest": SimpleNamespace(pts_count=3, offset=0)})),
             "3 messages deleted",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "delete_messages_bulk",
-            "invalid_argument",
+            "not_found",
             (
                 {**sg, "message_ids": [1, 2]},
                 lambda: fake({"DeleteMessagesRequest": tg("MessageIdInvalidError")}),
@@ -1222,6 +1268,7 @@ def messages_pairs():
             ),
             "Deleted 2 of 2",
             id="delete_messages_bulk-invalid-id",
+            extra={"rpc_error": "MESSAGE_ID_INVALID"},
         ),
         Pair(
             "delete_messages_bulk",
@@ -1237,6 +1284,7 @@ def messages_pairs():
             ),
             "Deleted 2 of 2",
             id="delete_messages_bulk-admin-required",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "unpin_all_messages",
@@ -1245,6 +1293,7 @@ def messages_pairs():
             "admin privileges are required",
             (sg, lambda: fake({"UnpinAllMessagesRequest": None})),
             "All messages unpinned",
+            extra={"rpc_error": "CHAT_ADMIN_REQUIRED"},
         ),
         Pair(
             "send_typing",
@@ -1404,7 +1453,7 @@ def profile_pairs():
         ),
         Pair(
             "set_bot_commands",
-            "private",
+            "invalid_argument",
             (
                 {"bot_username": "somebot", "commands": [{"command": "a", "description": "d"}]},
                 lambda: fake(get_me=user(1, bot=False)),
@@ -1478,13 +1527,6 @@ SUCCESS_ONLY = [
         lambda: fake(folder_routes(folder(5, include_peers=[types.InputPeerChannel(100, 2)]))),
         nothing,
         "already in folder",
-    ),
-    (
-        "get_message_link",
-        {"chat_id": 5, "message_id": 1},
-        lambda: fake(),
-        nothing,
-        "Cannot export message link",
     ),
     (
         "join_chat_by_link",
@@ -1717,7 +1759,7 @@ async def link_error(monkeypatch, exc):
             errors.ForbiddenError(None, "BRAND_NEW_FORBIDDEN", 403),
             {"kind": "private", "rpc_error": "BRAND_NEW_FORBIDDEN"},
         ),
-        (tg("UserIsBlockedError"), {"kind": "invalid_argument", "rpc_error": "USER_IS_BLOCKED"}),
+        (tg("UserIsBlockedError"), {"kind": "private", "rpc_error": "USER_IS_BLOCKED"}),
         (
             tg("FilerefUpgradeNeededError"),
             {"kind": "internal", "rpc_error": "FILEREF_UPGRADE_NEEDED"},

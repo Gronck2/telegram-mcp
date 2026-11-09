@@ -983,12 +983,14 @@ async def send_message(
 
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _send_rich(cl, entity, message, parse_mode.lower(), reply_to=reply_to)
         if format_date or custom_emojis:
             entities, error = _plain_entities(message, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             import random
 
@@ -1070,6 +1072,7 @@ async def send_scheduled_message(
     """
     try:
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
+            record_tool_error("invalid_argument")
             return (
                 f"parse_mode='{parse_mode}' is not supported for scheduled messages. "
                 "Use 'md', 'html' or 'plain'."
@@ -1078,6 +1081,7 @@ async def send_scheduled_message(
         await ensure_connected(cl)
         dt, schedule_error = parse_schedule_date(schedule_date)
         if schedule_error:
+            record_tool_error("invalid_argument")
             return schedule_error
 
         entity = await resolve_entity(chat_id, cl)
@@ -1174,6 +1178,7 @@ async def delete_scheduled_message(
         cl = get_client(account)
         await ensure_connected(cl)
         if not message_ids:
+            record_tool_error("invalid_argument")
             return "message_ids must be a non-empty list."
         entity = await resolve_entity(chat_id, cl)
         await cl(functions.messages.DeleteScheduledMessagesRequest(peer=entity, id=message_ids))
@@ -1260,6 +1265,7 @@ async def list_inline_buttons(
         await ensure_connected(cl)
         message_id, error = _int_or_error(message_id, "message_id")
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         entity = await resolve_entity(chat_id, cl)
@@ -1288,7 +1294,8 @@ async def list_inline_buttons(
 
 
 def _choose_button(buttons, button_text, button_index):
-    """Return (button, None), or (None, why no button was chosen)."""
+    """Return (button, None), or (None, why no button was chosen); the caller returns the
+    reason as the whole result, and it is recorded here (the kind depends on the reason)."""
     if button_text:
         normalized = button_text.strip().lower()
         for button in buttons:
@@ -1296,12 +1303,14 @@ def _choose_button(buttons, button_text, button_index):
                 return button, None
     if button_index is not None:
         if button_index < 0 or button_index >= len(buttons):
+            record_tool_error("invalid_argument")
             return None, f"button_index out of range. Valid indices: 0-{len(buttons) - 1}."
         return buttons[button_index], None
     available = ", ".join(
         f"[{button.index}] " + sanitize_user_content(button.text or "<no text>", max_length=64)
         for button in buttons
     )
+    record_tool_error("not_found")
     return None, f"Button not found. Available buttons: {available}"
 
 
@@ -1361,29 +1370,38 @@ async def press_inline_button(
         cl = get_client(account)
         await ensure_connected(cl)
         if button_text is None and button_index is None:
+            record_tool_error("invalid_argument")
             return "Provide button_text or button_index to choose a button."
         message_id, error = _int_or_error(message_id, "message_id")
         if error:
+            record_tool_error("invalid_argument")
             return error
         button_index, error = _int_or_error(button_index, "button_index")
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         entity = await resolve_entity(chat_id, cl)
         target_message, keyboard = await _keyboard_message(cl, entity, message_id, limit=20)
         if not target_message:
+            record_tool_error("not_found")
             return (
                 "No message with inline buttons found. Specify message_id "
                 "to target a specific message."
             )
         if not keyboard:
+            record_tool_error("not_found")
             return f"Message {target_message.id} does not contain inline buttons."
 
         target_button, error = _choose_button(keyboard.buttons, button_text, button_index)
         if error:
-            return error
+            return error  # recorded by _choose_button
         reason = _unpressable_reason(target_button)
         if reason:
+            # URL and copy buttons hand the caller the URL / text instead: an answer, not
+            # a failure. Every other unpressable button is a refusal.
+            if target_button.kind not in _URL_KINDS and target_button.kind != "copy":
+                record_tool_error("invalid_argument")
             return reason
 
         if target_button.kind == "game":
@@ -1397,16 +1415,19 @@ async def press_inline_button(
         try:
             answer = await cl(request)
         except telethon.errors.BotResponseTimeoutError:
+            record_tool_error("timeout", rpc_error="BOT_RESPONSE_TIMEOUT")
             return (
                 "The bot did not answer the button press in time. The press may still "
                 "have reached it: check the chat before pressing again."
             )
-        except telethon.errors.DataInvalidError:
+        except telethon.errors.DataInvalidError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Telegram refused the button's data; the keyboard has probably changed. "
                 "Call list_inline_buttons again."
             )
-        except telethon.errors.MessageIdInvalidError:
+        except telethon.errors.MessageIdInvalidError as e:
+            record_tool_error(**classify_error(e))
             return f"Message {target_message.id} is no longer in this chat."
 
         response = None
@@ -1657,8 +1678,10 @@ async def transcribe_voice(
 
         msg = await cl.get_messages(entity, ids=message_id)
         if not msg:
+            record_tool_error("not_found")
             return f"Message {message_id} not found."
         if not transcription.is_transcribable(msg):
+            record_tool_error("invalid_argument")
             return f"Message {message_id} has no voice message or video note to transcribe."
 
         config_error = transcription.engine_config_error(chosen_engine)
@@ -1756,6 +1779,7 @@ async def get_message_context(
             chat, limit=context_size, min_id=message_id, reverse=True
         )
         if not central_message:
+            record_tool_error("not_found")
             return f"Message with ID {message_id} not found in chat {chat_id}."
         # Combine messages in chronological order
         all_messages = list(messages_before) + list(central_message) + list(messages_after)
@@ -1864,15 +1888,18 @@ async def set_default_send_as(
         cl = get_client(account)
         peer = await resolve_input_entity(chat_id, cl)
         if not isinstance(peer, types.InputPeerChannel):
+            record_tool_error("invalid_argument")
             return SEND_AS_UNSUPPORTED_CHAT.format(chat_id=chat_id)
         sender = await resolve_input_entity(send_as, cl)
         sender_label = SEND_AS_SELF_LABEL if isinstance(sender, types.InputPeerSelf) else send_as
         await cl(functions.messages.SaveDefaultSendAsRequest(peer=peer, send_as=sender))
         return f"Default sender in chat {chat_id} set to {sender_label}."
-    except telethon.errors.SendAsPeerInvalidError:
+    except telethon.errors.SendAsPeerInvalidError as e:
+        record_tool_error(**classify_error(e))
         return SEND_AS_PEER_REFUSED.format(send_as=send_as, chat_id=chat_id)
     except Exception as e:
         if isinstance(e, telethon.errors.RPCError) and is_premium_rpc_error(e):
+            record_tool_error(**{**classify_error(e), "kind": "private"})
             return SEND_AS_PREMIUM_REQUIRED.format(send_as=send_as, chat_id=chat_id)
         return log_and_format_error("set_default_send_as", e, chat_id=chat_id, send_as=send_as)
 
@@ -2116,12 +2143,14 @@ async def edit_message(
         entity = await resolve_entity(chat_id, cl)
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _edit_rich(cl, entity, message_id, new_text, parse_mode.lower())
         if format_date or custom_emojis:
             entities, error = _plain_entities(new_text, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             await cl(
                 functions.messages.EditMessageRequest(
@@ -2185,6 +2214,7 @@ async def delete_message(
                 account=account,
                 message_ids=[message_id],
             )
+            record_tool_error("not_found")
             return f"Message {message_id} is not in chat {chat_id}; nothing was deleted."
         await cl.delete_messages(entity, message_id)
         record_audit_event(
@@ -2249,7 +2279,7 @@ async def delete_chat_history(
             f"Chat {chat_id} history cleared {scope}: "
             f"{pts_count} messages deleted (offset={offset})."
         )
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
         record_audit_event(
             tool="delete_chat_history",
             chat_id=chat_id,
@@ -2258,7 +2288,7 @@ async def delete_chat_history(
             revoke=revoke,
             extra={"max_id": max_id},
         )
-        record_tool_error("private")
+        record_tool_error(**classify_error(e))
         return "Cannot delete chat history: admin privileges are required."
     except Exception as e:
         record_audit_event(
@@ -2317,6 +2347,7 @@ async def delete_messages_bulk(
                 message_ids=message_ids,
                 revoke=revoke,
             )
+            record_tool_error("not_found")
             return (
                 f"Message(s) {', '.join(map(str, outside))} are not in chat {chat_id}; "
                 "nothing was deleted."
@@ -2340,7 +2371,7 @@ async def delete_messages_bulk(
             extra={"pts_count": pts_count},
         )
         return f"Deleted {pts_count} of {len(message_ids)} messages from chat {chat_id}."
-    except telethon.errors.rpcerrorlist.MessageIdInvalidError:
+    except telethon.errors.rpcerrorlist.MessageIdInvalidError as e:
         record_audit_event(
             tool="delete_messages_bulk",
             chat_id=chat_id,
@@ -2349,9 +2380,9 @@ async def delete_messages_bulk(
             message_ids=message_ids,
             revoke=revoke,
         )
-        record_tool_error("invalid_argument")
+        record_tool_error(**classify_error(e))
         return "Cannot delete messages: one or more message IDs are invalid."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
         record_audit_event(
             tool="delete_messages_bulk",
             chat_id=chat_id,
@@ -2360,7 +2391,7 @@ async def delete_messages_bulk(
             message_ids=message_ids,
             revoke=revoke,
         )
-        record_tool_error("private")
+        record_tool_error(**classify_error(e))
         return "Cannot delete messages: admin privileges are required."
     except Exception as e:
         record_audit_event(
@@ -2455,8 +2486,8 @@ async def unpin_all_messages(chat_id: Union[int, str], account: Optional[str] = 
         entity = await resolve_entity(chat_id, cl)
         await cl(functions.messages.UnpinAllMessagesRequest(peer=entity))
         return f"All messages unpinned in chat {chat_id}."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Cannot unpin messages: admin privileges are required."
     except Exception as e:
         return log_and_format_error("unpin_all_messages", e, chat_id=chat_id)
@@ -2496,6 +2527,7 @@ async def send_typing(
     """
     try:
         if type(seconds) not in (int, float) or not 0.5 <= seconds <= TYPING_MAX_SECONDS:
+            record_tool_error("invalid_argument")
             return f"seconds must be between 0.5 and {TYPING_MAX_SECONDS:g}."
         if topic_id is not None and (type(topic_id) is not int or topic_id <= 0):
             record_tool_error("invalid_argument")
@@ -2629,12 +2661,14 @@ async def reply_to_message(
         entity = await resolve_entity(chat_id, cl)
         conflict = _plain_text_conflict(parse_mode, format_date, custom_emojis)
         if conflict:
+            record_tool_error("invalid_argument")
             return conflict
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _send_rich(cl, entity, text, parse_mode.lower(), reply_to=message_id)
         if format_date or custom_emojis:
             entities, error = _plain_entities(text, format_date, custom_emojis)
             if error:
+                record_tool_error("invalid_argument")
                 return error
             import random
 
@@ -3363,6 +3397,7 @@ async def get_message_reactions(
         peer = await resolve_input_entity(chat_id, cl)
         message = await cl.get_messages(peer, ids=message_id)
         if message is None:
+            record_tool_error("not_found")
             return f"Message {message_id} not found in chat {chat_id}."
 
         if not getattr(getattr(message, "reactions", None), "results", None):
@@ -3456,6 +3491,7 @@ async def save_draft(
         elif mode == "plain":
             entities = None
         else:
+            record_tool_error("invalid_argument")
             return f"parse_mode='{parse_mode}' is not supported for drafts. Use 'html', 'md' or 'plain'."
 
         cl = get_client(account)

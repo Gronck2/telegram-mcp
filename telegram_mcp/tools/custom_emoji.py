@@ -12,6 +12,7 @@ from telethon.errors.rpcerrorlist import StickersetInvalidError
 from sanitize import sanitize_name, sanitize_user_content
 from telegram_mcp.runtime import (
     _resolve_writable_file_path,
+    classify_error,
     ensure_connected,
     get_client,
     json_serializer,
@@ -152,7 +153,8 @@ async def get_custom_emoji_pack(
                     hash=0,
                 )
             )
-        except StickersetInvalidError:
+        except StickersetInvalidError as e:
+            record_tool_error(**classify_error(e))
             return f"Emoji pack '{short_name}' not found or is invalid."
 
         set_meta = getattr(result, "set", None)
@@ -275,6 +277,7 @@ async def preview_custom_emoji(
 
         docs = await cl(functions.messages.GetCustomEmojiDocumentsRequest(document_id=[doc_id]))
         if not docs:
+            record_tool_error("not_found")
             return f"Custom emoji with document ID {doc_id} not found."
 
         doc = docs[0]

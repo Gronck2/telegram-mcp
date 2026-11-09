@@ -122,11 +122,24 @@ def _admit(
     return None, (recent + [now])[-max(limits.max_per_day, 1) :]
 
 
-def _refusal(reason: str, wait_seconds: float) -> str:
-    return (
+class RateRefusal(str):
+    """Refusal text of a local rate limit; ``retry_after`` is the seconds it asks to wait.
+
+    A plain ``str`` everywhere else, so the text a caller sees is unchanged. Configuration
+    and state-file refusals stay plain strings (no ``retry_after``).
+    """
+
+    retry_after: int = 0
+
+
+def _refusal(reason: str, wait_seconds: float) -> "RateRefusal":
+    seconds = max(1, math.ceil(wait_seconds))
+    refusal = RateRefusal(
         f"Error: resolve_phone refused locally ({reason}); no request was sent to Telegram. "
-        f"Retry in {max(1, math.ceil(wait_seconds))} seconds, not sooner."
+        f"Retry in {seconds} seconds, not sooner."
     )
+    refusal.retry_after = seconds
+    return refusal
 
 
 class ResolvePhoneLimiter:

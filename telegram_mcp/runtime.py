@@ -1949,6 +1949,8 @@ _PRIVATE_RPC = frozenset(
         "CHAT_WRITE_FORBIDDEN",
         "CHAT_ADMIN_REQUIRED",
         "USER_PRIVACY_RESTRICTED",
+        "USER_NOT_MUTUAL_CONTACT",
+        "USER_IS_BLOCKED",  # they blocked us: no access to that user
         "ChannelPrivateError",
         "ChatForbiddenError",
         "UserNotParticipantError",
@@ -1957,6 +1959,8 @@ _PRIVATE_RPC = frozenset(
         "ChatWriteForbiddenError",
         "ChatAdminRequiredError",
         "UserPrivacyRestrictedError",
+        "UserNotMutualContactError",
+        "UserIsBlockedError",
     }
 )
 _FLOOD_RPC = frozenset({"PEER_FLOOD", "PeerFloodError", "SlowModeWaitError"})
@@ -3538,6 +3542,15 @@ async def _get_effective_allowed_roots_with_status(
     return [], ROOTS_STATUS_CLIENT_DENY_ALL
 
 
+def _path_refusal(message: str) -> str:
+    """Record a file-path security refusal (structured kind ``invalid_argument``).
+
+    Every caller returns the refusal text as the whole tool result straight away.
+    """
+    record_tool_error("invalid_argument")
+    return message
+
+
 async def _ensure_allowed_roots(
     ctx: Optional[Context], tool_name: str
 ) -> tuple[List[Path], Optional[str]]:
@@ -3546,7 +3559,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_CLIENT_DENY_ALL:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because the client provided an empty "
                     "MCP Roots list (deny-all)."
                 ),
@@ -3554,7 +3567,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_ERROR:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because MCP Roots could not be verified safely. "
                     "Check MCP client/server logs."
                 ),
@@ -3562,7 +3575,7 @@ async def _ensure_allowed_roots(
         if status == ROOTS_STATUS_TIMEOUT:
             return (
                 [],
-                (
+                _path_refusal(
                     f"{tool_name} is disabled because the MCP client never answered the "
                     "roots/list request. Configure server CLI roots and set "
                     "TELEGRAM_SERVER_ROOTS_ONLY=1 (skip roots/list) or "
@@ -3572,7 +3585,7 @@ async def _ensure_allowed_roots(
             )
         return (
             [],
-            (
+            _path_refusal(
                 f"{tool_name} is disabled until allowed roots are configured. "
                 "Provide server CLI roots and/or client MCP Roots."
             ),
@@ -3592,7 +3605,7 @@ async def _resolve_readable_file_path(
 
     pattern_error = _contains_forbidden_path_patterns(raw_path)
     if pattern_error:
-        return None, pattern_error
+        return None, _path_refusal(pattern_error)
 
     candidate = Path(raw_path.strip())
     if not candidate.is_absolute():
@@ -3601,22 +3614,22 @@ async def _resolve_readable_file_path(
     try:
         candidate = candidate.resolve(strict=True)
     except FileNotFoundError:
-        return None, f"File not found: {raw_path}"
+        return None, _path_refusal(f"File not found: {raw_path}")
 
     if not _path_is_within_any_root(candidate, roots):
-        return None, "Path is outside allowed roots."
+        return None, _path_refusal("Path is outside allowed roots.")
     if not candidate.is_file():
-        return None, f"Path is not a file: {candidate}"
+        return None, _path_refusal(f"Path is not a file: {candidate}")
     if not os.access(candidate, os.R_OK):
-        return None, f"File is not readable: {candidate}"
+        return None, _path_refusal(f"File is not readable: {candidate}")
 
     extension_error = _ensure_extension_allowed(tool_name, candidate)
     if extension_error:
-        return None, extension_error
+        return None, _path_refusal(extension_error)
 
     size_error = _ensure_size_within_limit(tool_name, candidate)
     if size_error:
-        return None, size_error
+        return None, _path_refusal(size_error)
 
     return candidate, None
 
@@ -3635,7 +3648,7 @@ async def _resolve_writable_file_path(
     if raw_path and raw_path.strip():
         pattern_error = _contains_forbidden_path_patterns(raw_path)
         if pattern_error:
-            return None, pattern_error
+            return None, _path_refusal(pattern_error)
         candidate = Path(raw_path.strip())
         if not candidate.is_absolute():
             candidate = _first_resolution_root(roots) / candidate
@@ -3656,15 +3669,15 @@ async def _resolve_writable_file_path(
     if not _path_is_within_any_root(candidate, roots) or not _path_is_within_any_root(
         parent, roots
     ):
-        return None, "Path is outside allowed roots."
+        return None, _path_refusal("Path is outside allowed roots.")
 
     extension_error = _ensure_extension_allowed(tool_name, candidate)
     if extension_error:
-        return None, extension_error
+        return None, _path_refusal(extension_error)
 
     parent.mkdir(parents=True, exist_ok=True)
     if not os.access(parent, os.W_OK):
-        return None, f"Directory not writable: {parent}"
+        return None, _path_refusal(f"Directory not writable: {parent}")
 
     return candidate, None
 

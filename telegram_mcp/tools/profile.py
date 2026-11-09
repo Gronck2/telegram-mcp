@@ -172,7 +172,7 @@ async def get_privacy_settings(account: Optional[str] = None) -> str:
         return log_and_format_error("get_privacy_settings", e)
 
 
-class _PrivacyRefusal(ValueError):
+class _PrivacyRefusal(ValidationError):
     """A deliberate refusal; its message is static text that is safe to show to the agent."""
 
 
@@ -464,6 +464,7 @@ async def get_bot_info(bot_username: str, account: Optional[str] = None) -> str:
         cl = get_client(account)
         entity = await resolve_entity(bot_username, cl)
         if not entity:
+            record_tool_error("not_found")
             return f"Bot with username {bot_username} not found."
         if not peer_allowed(entity, identifier=bot_username):
             # Description and commands count as bio-like: public fields only.
@@ -518,7 +519,7 @@ async def set_bot_commands(
         # First check if the current client is a bot
         me = await cl.get_me()
         if not getattr(me, "bot", False):
-            record_tool_error("private")
+            record_tool_error("invalid_argument")
             return (
                 "Error: This function can only be used by bot accounts. "
                 "Your current Telegram account is a regular user account, not a bot."

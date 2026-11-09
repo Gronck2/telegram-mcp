@@ -271,12 +271,13 @@ CASES = [
         {"kind": "flood", "retry_after": 11},
     ),
     Case("success_link", LINK, dict(chat_id=100, message_id=1), lambda: _chan_client(), None),
+    # Id kept for the recorded OFF golden file; since round 3 this refusal is recorded ON.
     Case(
         "success_not_channel_text",
         LINK,
         dict(chat_id=5, message_id=1),
         lambda: _chan_client(),
-        None,
+        {"kind": "invalid_argument"},
     ),
     Case("success_list_chats", "list_chats", dict(limit=3), lambda: _chan_client(), None),
     Case(

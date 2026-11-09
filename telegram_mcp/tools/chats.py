@@ -171,7 +171,8 @@ async def get_chats(account: Optional[str] = None, page: int = 1, page_size: int
         await ensure_connected(cl)
         try:
             dialogs = await cl.get_dialogs()
-        except BotMethodInvalidError:
+        except BotMethodInvalidError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Listing chats/dialogs is not supported for bot accounts "
                 "(Telegram API restriction: bots cannot fetch dialog lists)."
@@ -181,6 +182,8 @@ async def get_chats(account: Optional[str] = None, page: int = 1, page_size: int
         start = (page - 1) * page_size
         end = start + page_size
         if start >= len(dialogs):
+            if page > 1:  # page 1 of an empty account is an empty result, not a refusal
+                record_tool_error("invalid_argument")
             return "Page out of range."
         chats = dialogs[start:end]
         records = []
@@ -232,8 +235,8 @@ async def subscribe_public_channel(channel: Union[int, str], account: Optional[s
             getattr(entity, "title", getattr(entity, "username", "this channel"))
         )
         return f"Already subscribed to {title}."
-    except telethon.errors.rpcerrorlist.ChannelPrivateError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChannelPrivateError as e:
+        record_tool_error(**classify_error(e))
         return "Cannot subscribe: this channel is private or requires an invite link."
     except Exception as e:
         return log_and_format_error("subscribe_public_channel", e, channel=channel)
@@ -270,9 +273,11 @@ async def list_topics(
         entity = await resolve_entity(chat_id, cl)
 
         if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False):
+            record_tool_error("invalid_argument")
             return "The specified chat is not a supergroup."
 
         if not getattr(entity, "forum", False):
+            record_tool_error("invalid_argument")
             return "The specified supergroup does not have forum topics enabled."
 
         result = await cl(
@@ -404,6 +409,7 @@ async def enable_forum_topics(
         entity = await resolve_entity(chat_id, cl)
 
         if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False):
+            record_tool_error("invalid_argument")
             return "The specified chat is not a supergroup."
 
         if getattr(entity, "forum", False):
@@ -453,9 +459,11 @@ async def create_forum_topic(
         entity = await resolve_entity(chat_id, cl)
 
         if not isinstance(entity, Channel) or not getattr(entity, "megagroup", False):
+            record_tool_error("invalid_argument")
             return "The specified chat is not a supergroup."
 
         if not getattr(entity, "forum", False):
+            record_tool_error("invalid_argument")
             return (
                 "The specified supergroup does not have forum topics enabled. "
                 "Use enable_forum_topics first."
@@ -573,6 +581,7 @@ async def edit_forum_topic(
 
         error = _forum_supergroup_error(entity)
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         if "title" in changes:
@@ -634,6 +643,7 @@ async def delete_forum_topic(
 
         error = _forum_supergroup_error(entity)
         if error:
+            record_tool_error("invalid_argument")
             return error
 
         batches = 0
@@ -698,7 +708,8 @@ async def list_chats(
         await ensure_connected(cl)
         try:
             dialogs = await cl.get_dialogs(limit=limit, archived=archived)
-        except BotMethodInvalidError:
+        except BotMethodInvalidError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Listing chats is not supported for bot accounts "
                 "(Telegram API restriction: bots cannot fetch dialog lists)."
@@ -1358,25 +1369,26 @@ async def get_message_read_by(
                     peer=entity, msg_id=message_id
                 )
             )
-        except MsgTooOldError:
+        except MsgTooOldError as e:
+            record_tool_error(**classify_error(e))
             return (
                 f"Read receipts unavailable for message {message_id} in chat "
                 f"{chat_id}: message is too old or read receipts are disabled."
             )
-        except ChatAdminRequiredError:
-            record_tool_error("private")
+        except ChatAdminRequiredError as e:
+            record_tool_error(**classify_error(e))
             return (
                 f"Cannot read receipts for message {message_id} in chat {chat_id}: "
                 f"admin rights are required."
             )
-        except UserNotParticipantError:
-            record_tool_error("private")
+        except UserNotParticipantError as e:
+            record_tool_error(**classify_error(e))
             return (
                 f"Cannot read receipts for message {message_id} in chat {chat_id}: "
                 f"you are not a participant of this chat."
             )
-        except PeerIdInvalidError:
-            record_tool_error("invalid_argument")
+        except PeerIdInvalidError as e:
+            record_tool_error(**classify_error(e))
             return f"Invalid chat: {chat_id}."
 
         # result is a list of ReadParticipantDate objects in newer Telethon,
@@ -1440,6 +1452,7 @@ async def get_message_link(
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
         if not isinstance(entity, Channel):
+            record_tool_error("invalid_argument")
             return (
                 f"Cannot export message link for this entity type "
                 f"({type(entity).__name__}). Message links are only available "

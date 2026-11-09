@@ -74,7 +74,9 @@ async def create_group(
 
         except Exception as create_err:
             if "PEER_FLOOD" in str(create_err):
-                record_tool_error("internal")
+                # PEER_FLOOD is Telegram's anti-spam limit: a flood refusal whatever
+                # exception type carried it (rpc_error / retry_after kept when known).
+                record_tool_error(**{**classify_error(create_err), "kind": "flood"})
                 return "Error: Cannot create group due to Telegram limits. Try again later."
             else:
                 raise  # Let the outer exception handler catch it
@@ -195,14 +197,14 @@ async def invite_to_group(
                 if missing:
                     msg += f" (not added: {', '.join(map(str, missing))})"
                 return msg
-        except telethon.errors.rpcerrorlist.UserNotMutualContactError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserNotMutualContactError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot invite users who are not mutual contacts. "
                 "Please ensure the users are in your contacts and have added you back."
             )
-        except telethon.errors.rpcerrorlist.UserPrivacyRestrictedError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserPrivacyRestrictedError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: One or more users have privacy settings that prevent you from adding them."
             )
@@ -483,8 +485,8 @@ async def upgrade_group_to_supergroup(
             f"Group '{title}' upgraded to a supergroup, but Telegram did not return "
             f"the new ID. Call upgrade_group_to_supergroup again with {chat_id} to look it up."
         )
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: only the group creator can upgrade it to a supergroup."
     except Exception as e:
         return log_and_format_error("upgrade_group_to_supergroup", e, chat_id=chat_id)
@@ -597,11 +599,11 @@ async def edit_chat_about(
         return f"Chat {chat_id} description updated."
     except telethon.errors.rpcerrorlist.ChatAboutNotModifiedError:
         return f"Chat {chat_id} description is already set to the requested value."
-    except telethon.errors.rpcerrorlist.ChatAboutTooLongError:
-        record_tool_error("invalid_argument")
+    except telethon.errors.rpcerrorlist.ChatAboutTooLongError as e:
+        record_tool_error(**classify_error(e))
         return "Error: description exceeds Telegram's 255 character limit."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: admin rights required to edit the chat description."
     except Exception as e:
         return log_and_format_error("edit_chat_about", e, chat_id=chat_id)
@@ -721,8 +723,8 @@ async def promote_admin(
                 )
             )
             return f"Successfully promoted user {user_id} to admin in {sanitize_name(chat.title)}"
-        except telethon.errors.rpcerrorlist.UserNotMutualContactError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserNotMutualContactError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot promote users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -789,8 +791,8 @@ async def demote_admin(
                 )
             )
             return f"Successfully demoted user {user_id} from admin in {sanitize_name(chat.title)}"
-        except telethon.errors.rpcerrorlist.UserNotMutualContactError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserNotMutualContactError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot modify admin status of users who are not mutual "
                 "contacts. Please ensure the user is in your contacts and has "
@@ -827,6 +829,7 @@ async def ban_user(
         cl = get_client(account)
         chat = await resolve_entity(chat_id, cl)
         if isinstance(chat, types.Chat):
+            record_tool_error("invalid_argument")
             return BASIC_GROUP_NO_BANS
         user = await resolve_entity(user_id, cl)
 
@@ -854,8 +857,8 @@ async def ban_user(
                 )
             )
             return f"User {user_id} banned from chat {sanitize_name(chat.title)} (ID: {chat_id})."
-        except telethon.errors.rpcerrorlist.UserNotMutualContactError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserNotMutualContactError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot ban users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -890,6 +893,7 @@ async def unban_user(
         cl = get_client(account)
         chat = await resolve_entity(chat_id, cl)
         if isinstance(chat, types.Chat):
+            record_tool_error("invalid_argument")
             return BASIC_GROUP_NO_BANS
         user = await resolve_entity(user_id, cl)
 
@@ -919,8 +923,8 @@ async def unban_user(
             return (
                 f"User {user_id} unbanned from chat {sanitize_name(chat.title)} (ID: {chat_id})."
             )
-        except telethon.errors.rpcerrorlist.UserNotMutualContactError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.UserNotMutualContactError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot modify status of users who are not mutual contacts. "
                 "Please ensure the user is in your contacts and has added you back."
@@ -1064,14 +1068,14 @@ async def remove_user(
                 chat_id=chat_id,
                 user_id=user_id,
             )
-        except telethon.errors.rpcerrorlist.UserNotParticipantError:
-            record_tool_error("not_found")
+        except telethon.errors.rpcerrorlist.UserNotParticipantError as e:
+            record_tool_error(**classify_error(e))
             return "Error: The user is not a member of this chat."
-        except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-            record_tool_error("private")
+        except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+            record_tool_error(**classify_error(e))
             return "Error: admin rights required to remove members from this chat."
-        except telethon.errors.rpcerrorlist.UserAdminInvalidError:
-            record_tool_error("invalid_argument")
+        except telethon.errors.rpcerrorlist.UserAdminInvalidError as e:
+            record_tool_error(**classify_error(e))
             return (
                 "Error: Cannot remove this user - they are an admin. "
                 "Demote them first (demote_admin)."
@@ -1153,8 +1157,8 @@ async def set_default_chat_permissions(
             )
         )
         return f"Default permissions for chat {chat_id} updated."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: admin rights required to change default permissions."
     except telethon.errors.rpcerrorlist.ChatNotModifiedError:
         return f"Chat {chat_id} default permissions unchanged (already matched)."
@@ -1196,8 +1200,8 @@ async def toggle_slow_mode(
         if seconds == 0:
             return f"Slow mode disabled for chat {chat_id}."
         return f"Slow mode enabled for chat {chat_id} (interval: {seconds}s)."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: admin rights required to toggle slow mode."
     except Exception as e:
         return log_and_format_error("toggle_slow_mode", e, chat_id=chat_id, seconds=seconds)
@@ -1245,7 +1249,8 @@ _NOT_CREATOR_SELF = (
 async def _admin_to_patch(cl, chat, user, user_id, changes: Dict[str, bool]):
     """Return (current participant, None) for an admin whose rights may be patched, or
     (None, refusal). Your own account qualifies only as the chat's creator, and then
-    only CREATOR_SELF_EDITABLE_RIGHTS may change."""
+    only CREATOR_SELF_EDITABLE_RIGHTS may change. Each refusal is recorded here (its kind
+    depends on the reason) and returned whole by the caller."""
     is_self = getattr(user, "is_self", False)
     try:
         result = await cl(
@@ -1253,8 +1258,9 @@ async def _admin_to_patch(cl, chat, user, user_id, changes: Dict[str, bool]):
                 channel=chat, participant=types.InputPeerSelf() if is_self else user
             )
         )
-    except telethon.errors.rpcerrorlist.UserNotParticipantError:
+    except telethon.errors.rpcerrorlist.UserNotParticipantError as e:
         who = "you are" if is_self else f"{user_id} is"
+        record_tool_error(**classify_error(e))
         return None, (
             f"Error: {who} not in this chat, so there are no admin rights to patch. "
             "Nothing was changed."
@@ -1262,10 +1268,12 @@ async def _admin_to_patch(cl, chat, user, user_id, changes: Dict[str, bool]):
     participant = result.participant
     if is_self:
         if not isinstance(participant, types.ChannelParticipantCreator):
+            record_tool_error("invalid_argument")
             return None, _NOT_CREATOR_SELF.format(user_id=user_id)
         fixed = sorted(name for name in changes if name not in CREATOR_SELF_EDITABLE_RIGHTS)
         if fixed:
             editable = ", ".join(CREATOR_SELF_EDITABLE_RIGHTS)
+            record_tool_error("invalid_argument")
             return None, (
                 f"Error: as the creator you hold every right; on your own account only "
                 f"{editable} and rank can be changed. Leave out {', '.join(fixed)}. "
@@ -1273,16 +1281,19 @@ async def _admin_to_patch(cl, chat, user, user_id, changes: Dict[str, bool]):
             )
         return participant, None
     if isinstance(participant, types.ChannelParticipantCreator):
+        record_tool_error("invalid_argument")
         return None, (
             f"Error: {user_id} is the chat's creator, whose admin settings only the "
             "creator can change. Nothing was changed."
         )
     if not isinstance(participant, types.ChannelParticipantAdmin):
+        record_tool_error("invalid_argument")
         return None, (
             f"Error: {user_id} is not an admin of this chat, so there are no rights to "
             "patch. Promote them with promote_admin first. Nothing was changed."
         )
     if participant.is_self:  # your own account under another id or username
+        record_tool_error("invalid_argument")
         return None, _NOT_CREATOR_SELF.format(user_id=user_id)
     return participant, None
 
@@ -1440,17 +1451,17 @@ async def edit_admin_rights(
             )
         )
         return f"Admin rights updated for user {user_id} in chat {chat_id}."
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: you need admin rights (with 'add_admins') to modify admin rights."
-    except telethon.errors.rpcerrorlist.UserAdminInvalidError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.UserAdminInvalidError as e:
+        record_tool_error(**classify_error(e))
         return (
             "Error: cannot modify admin rights for this user "
             "(you may need to have promoted them originally)."
         )
-    except telethon.errors.rpcerrorlist.RightForbiddenError:
-        record_tool_error("invalid_argument")
+    except telethon.errors.rpcerrorlist.RightForbiddenError as e:
+        record_tool_error(**classify_error(e))
         return (
             "Error: some of the requested rights are not allowed for your "
             "account or for this chat."
@@ -1562,7 +1573,7 @@ async def get_member_admin_status(
         await ensure_connected(cl)
         chat = await resolve_entity(chat_id, cl)
         if not isinstance(chat, Channel):
-            record_tool_error("private")
+            record_tool_error("invalid_argument")
             return (
                 "Error: get_member_admin_status supports only supergroups and channels. "
                 "Basic groups do not have per-admin rights."
@@ -1586,8 +1597,8 @@ async def get_member_admin_status(
             "admin_rights": _format_admin_rights(getattr(participant, "admin_rights", None)),
         }
         return format_tool_result([record])
-    except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
-        record_tool_error("private")
+    except telethon.errors.rpcerrorlist.ChatAdminRequiredError as e:
+        record_tool_error(**classify_error(e))
         return "Error: you need admin rights in this chat to inspect its members."
     except Exception as e:
         return log_and_format_error("get_member_admin_status", e, chat_id=chat_id, user_id=user_id)
@@ -1756,8 +1767,10 @@ async def join_chat_by_link(link: str, account: Optional[str] = None) -> str:
     except Exception as e:
         err_str = str(e).lower()
         if "expired" in err_str:
+            record_tool_error("not_found")
             return "The invite hash has expired and is no longer valid."
         elif "invalid" in err_str:
+            record_tool_error("not_found")
             return "The invite hash is invalid or malformed."
         elif "already" in err_str and "participant" in err_str:
             return "You are already a member of this chat."
@@ -1838,8 +1851,10 @@ async def import_chat_invite(hash: str, account: Optional[str] = None) -> str:
         except Exception as join_err:
             err_str = str(join_err).lower()
             if "expired" in err_str:
+                record_tool_error("not_found")
                 return "The invite hash has expired and is no longer valid."
             elif "invalid" in err_str:
+                record_tool_error("not_found")
                 return "The invite hash is invalid or malformed."
             elif "already" in err_str and "participant" in err_str:
                 return "You are already a member of this chat."

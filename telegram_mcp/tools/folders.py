@@ -538,6 +538,7 @@ async def get_folder(folder_id: int, account: Optional[str] = None) -> str:
                 break
 
         if not target_folder:
+            record_tool_error("not_found")
             return (
                 f"Folder with ID {folder_id} not found. Use list_folders to see available folders."
             )
@@ -705,8 +706,8 @@ async def create_folder(
             for chat_id in chat_ids:
                 try:
                     peer = await resolve_input_entity(chat_id, cl)
-                except Exception:
-                    record_tool_error("not_found")
+                except Exception as e:
+                    record_tool_error(**classify_error(e))
                     return "Failed to resolve a requested chat."
                 # Saved Messages (InputPeerSelf) is the account's own chat: no allowlist
                 # check, and utils.get_peer_id() cannot cast that peer anyway.
@@ -802,6 +803,7 @@ async def add_chat_to_folder(
                 break
 
         if not target_folder:
+            record_tool_error("not_found")
             return (
                 f"Folder with ID {folder_id} not found. Use list_folders to see available folders."
             )
@@ -809,8 +811,8 @@ async def add_chat_to_folder(
         # Resolve chat to input peer
         try:
             peer = await resolve_input_entity(chat_id, cl)
-        except Exception:
-            record_tool_error("not_found")
+        except Exception as e:
+            record_tool_error(**classify_error(e))
             return "Failed to resolve a requested chat."
 
         # Check if already included (idempotent)
@@ -905,6 +907,7 @@ async def remove_chat_from_folder(
                 break
 
         if not target_folder:
+            record_tool_error("not_found")
             return (
                 f"Folder with ID {folder_id} not found. Use list_folders to see available folders."
             )
@@ -913,8 +916,8 @@ async def remove_chat_from_folder(
         try:
             peer = await resolve_input_entity(chat_id, cl)
             peer_id = utils.get_peer_id(peer)
-        except Exception:
-            record_tool_error("not_found")
+        except Exception as e:
+            record_tool_error(**classify_error(e))
             return "Failed to resolve a requested chat."
 
         # Filter out the peer from both include and pinned lists
@@ -1063,11 +1066,13 @@ async def reorder_folders(folder_ids: List[int], account: Optional[str] = None) 
         # Validate all provided IDs exist
         for fid in folder_ids:
             if fid not in existing_ids:
+                record_tool_error("not_found")
                 return f"Folder ID {fid} not found. Use list_folders to see available folders."
 
         # Validate all existing folders are included
         if set(folder_ids) != existing_ids:
             missing = existing_ids - set(folder_ids)
+            record_tool_error("invalid_argument")
             return f"All folder IDs must be included. Missing: {missing}"
 
         # Reorder
