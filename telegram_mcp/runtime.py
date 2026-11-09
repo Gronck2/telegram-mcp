@@ -1366,7 +1366,10 @@ def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier
         return False
     ident = chat_identifier.strip()
     if _NUMERIC_CHAT_ID_RE.fullmatch(ident):
-        return int(ident) in allowed
+        try:
+            return int(ident) in allowed
+        except ValueError:  # beyond int()'s 4300-digit limit: never allowed
+            return False
     phone = utils.parse_phone(ident)
     if phone:
         # Only a "+"-led string Telethon itself reads as a phone (no "@" stripping,
@@ -1910,21 +1913,38 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                     # Handle integer IDs
                     if isinstance(value, int):
                         if not (-(2**63) <= value <= 2**63 - 1):
+                            # str() of an int beyond 4300 digits raises; never echo
+                            # more than a short prefix of the caller's value.
+                            shown = str(value)[:40] if value.bit_length() <= 1024 else "…"
                             return (
                                 None,
-                                f"Invalid {p_name}: {value}. ID is out of "
+                                f"Invalid {p_name}: {shown}. ID is out of "
                                 "the valid integer range.",
                             )
                         return value, None
 
                     # Handle string IDs
                     if isinstance(value, str):
+                        stripped = value.strip()
+                        # A "+"-led phone is a phone, never the peer whose id has the
+                        # same digits: int() would drop the "+" and the allowlist
+                        # would judge (and the tool address) the wrong peer.
+                        if stripped.startswith("+") and utils.parse_phone(stripped):
+                            return value, None
                         try:
-                            int_value = int(value)
-                            if not (-(2**63) <= int_value <= 2**63 - 1):
+                            # Same numeric rule as the allowlist parser; int() alone
+                            # also takes "1_000", "+5" and padded signs.
+                            if not _NUMERIC_CHAT_ID_RE.fullmatch(stripped):
+                                raise ValueError(value)
+                            try:
+                                int_value = int(stripped)
+                            except ValueError:
+                                # Digits only, but beyond int()'s 4300-digit limit.
+                                int_value = None
+                            if int_value is None or not (-(2**63) <= int_value <= 2**63 - 1):
                                 return (
                                     None,
-                                    f"Invalid {p_name}: {value}. ID is out of "
+                                    f"Invalid {p_name}: {value[:40]}. ID is out of "
                                     "the valid integer range.",
                                 )
                             return int_value, None
@@ -2718,8 +2738,8 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
     phone-row miss, to the exact display name / title of a cached chat (a chat
     called ``+15551234567``). Telethon 1.45 ``get_entity`` raises on a contacts
     miss instead, but it is pinned here too as defence in depth against future
-    Telethon versions. Under an allowlist only a phone-row hit or a contacts entry
-    with this phone answers; anything else is refused.
+    Telethon versions. Only a phone-row hit or a contacts entry with this phone
+    answers, with or without an allowlist; anything else is refused.
     """
     phone = utils.parse_phone(identifier)
     if _phone_cached(client, identifier):
@@ -2733,8 +2753,8 @@ async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
         if getattr(user, "phone", None) == phone:
             return user if as_entity else utils.get_input_peer(user)
     raise ValueError(
-        f"{identifier!r} is not in the contacts or the phone cache; chat access is "
-        "restricted by an allowlist, so a phone cannot be matched by display name."
+        f"{identifier!r} is not in the contacts or the phone cache; a phone is never "
+        "matched by display name."
     )
 
 
@@ -2779,13 +2799,38 @@ def _guarded_input_getter(client):
     return get
 
 
+def _phone_routed(client, getter: str):
+    """Raw client lookup, except that phone strings go through ``_phone_lookup``."""
+    raw = getattr(client, getter)
+    as_entity = getter == "get_entity"
+
+    async def get(identifier):
+        if (
+            isinstance(identifier, str)
+            and utils.parse_phone(identifier)
+            and not _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip())
+        ):
+            # digit-only strings never get here from the resolvers (converted to int
+            # in _resolve); direct callers keep Telethon's own handling of them
+            return await _phone_lookup(client, identifier, as_entity)
+        return await raw(identifier)
+
+    return get
+
+
 def _lookup_callable(client, getter: str):
-    """The client's lookup method; under an allowlist the username-safe input lookup."""
+    """The client's lookup method.
+
+    Phone strings always go through ``_phone_lookup`` (never matched by title);
+    under an allowlist the username-safe lookups are used for everything else too.
+    """
     if is_chat_allowlist_enabled():
         if getter == "get_input_entity":
             return _guarded_input_getter(client)
         if getter == "get_entity":
             return _guarded_entity_getter(client)
+    elif getter in ("get_input_entity", "get_entity"):
+        return _phone_routed(client, getter)
     return getattr(client, getter)
 
 
@@ -2842,6 +2887,24 @@ async def _resolve_with_retries(
     ) from last_error
 
 
+def _digit_string_to_id(identifier: Union[int, str]) -> Union[int, str]:
+    """A digit string is an id (README), with or without an allowlist.
+
+    Left as a string Telethon would read it as a phone and, on a miss, reach the
+    display-name column or the contacts' phone numbers. A value Telethon cannot pack
+    (outside int64, or beyond int()'s 4300 digits) is refused here.
+    """
+    if not (isinstance(identifier, str) and _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip())):
+        return identifier
+    try:
+        value = int(identifier.strip())
+    except ValueError:
+        value = None
+    if value is None or not (-(2**63) <= value <= 2**63 - 1):
+        raise ValueError("The id is out of the valid id range.")
+    return value
+
+
 async def _resolve(getter: str, identifier: Union[int, str], client, label: str) -> Any:
     """Resolve an identifier, turning a failed free-text reference into a question.
 
@@ -2862,10 +2925,7 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
                     f"{identifier!r} is not a username or an id; chat access is restricted "
                     "by an allowlist, so display names cannot be used."
                 )
-            if _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip()):
-                # The allowlist matched this string as an integer id; resolving it as a
-                # phone would reach the display-name column on a miss.
-                identifier = int(identifier.strip())
+        identifier = _digit_string_to_id(identifier)
         return await _resolve_with_retries(
             getter, identifier, client, label, try_marked=not from_alias
         )

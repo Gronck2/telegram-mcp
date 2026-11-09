@@ -20,6 +20,10 @@ class FakeParticipants:
         self.yielded = 0
         self.connections = 0
 
+    async def get_input_entity(self, identifier):
+        # The tool always resolves the peer first; the fake peer is the identifier.
+        return identifier
+
     # Match Telethon's supported arguments; offset would raise TypeError.
     def iter_participants(self, chat_id, *, limit):
         self.calls.append((chat_id, limit))
@@ -52,6 +56,11 @@ def client(monkeypatch, tmp_path):
         selected.connections += 1
 
     monkeypatch.setattr(groups, "ensure_connected", connected)
+
+    async def resolver_connected(selected):
+        return None
+
+    monkeypatch.setattr(runtime, "ensure_connected", resolver_connected)
     return client
 
 

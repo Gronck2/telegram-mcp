@@ -65,22 +65,35 @@ Keep this file up to date when a change alters it.
    `get_recent_actions` and `send_typing` use the guarded or already checked peer.
    Invariant: `resolve_input_entity(s)` names the same peer as `resolve_entity(s)`;
    the cache answers directly only for own-account refs and username/phone row hits,
-   everything else (invites, links, misses) goes through `get_entity`. Numeric id
-   strings become ints (never a phone/name lookup); `@ name` and `tg://` forms are
-   refused like other malformed handles.
-   Phones and self (task 0005, round 4): under a list, a string that
-   `utils.parse_phone` accepts is resolved only by `_phone_lookup` (session
+   everything else (invites, links, misses) goes through `get_entity`. `@ name` and
+   `tg://` forms are refused like other malformed handles under a list. In every
+   mode (task 0006 round 4) `_resolve` turns a digit string (`-?\d+`) into an int
+   before any lookup, so it is never a phone/name lookup; a value outside int64
+   (or beyond `int()`'s 4300 digits) is a `ValueError` ("The id is out of the valid
+   id range."), never a `struct.error` from Telethon. `get_participants` and
+   `get_recent_actions` always resolve the peer through `resolve_input_entity`,
+   with or without a list, so a raw `+digits` string never reaches Telethon.
+   Phones and self (task 0005, round 4; task 0006 round 2 extends it to the
+   no-allowlist case, so `_lookup_callable` routes phones through `_phone_lookup`
+   with or without a list, costing at most one `GetContactsRequest` and only for
+   phone strings): a string that `utils.parse_phone` accepts is resolved only by
+   `_phone_lookup` (session
    phone-row hit, else a `GetContactsRequest` match on `user.phone`), in both
    resolvers; a miss is refused, never handed to `session.get_input_entity`,
    whose phone-row-miss fallback matches a cached chat titled like the phone
    (`client.get_entity` is pinned too, defence in depth; Telethon 1.45 raises
    there on a contacts miss). Entries `self`, `@self`, `t.me/self` are inert with a warning and
    a self-ref caller string is never granted by string (use the own numeric id,
-   ADR 0002). `set_contact_alias` refuses every key Telethon reads as a
+   ADR 0002). `validate_id` (task 0006) converts a string to an int only when it
+   fully matches `-?\d+`; a `+`-led string `parse_phone` accepts stays a string, so
+   `"+15551234567"` is never read as user/channel id 15551234567.
+   `set_contact_alias` refuses every key Telethon reads as a
    username (`is_unshadowable_identifier`, incl. 3-4 char Latin nicknames) in
    both modes with `alias_shadows_real_identifier`; under a list, legacy aliases
    of that shape are skipped by `apply_alias`.
-   Without a list nothing changes.
+   Without a list, usernames, aliases, `me` and free-text titles keep Telethon's
+   own lookup; digit strings (ints) and phone strings (`_phone_lookup`) are
+   handled as described above.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.
 4. **HTTP transport security** — Host/Origin validation always on

@@ -46,7 +46,7 @@ async def test_get_participants_uses_the_guarded_peer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_participants_without_allowlist_passes_the_string(monkeypatch):
+async def test_get_participants_without_allowlist_resolves_like_telethon(monkeypatch):
     client = make_client()
     tool_client(monkeypatch, groups, client)
     seen = []
@@ -62,7 +62,9 @@ async def test_get_participants_without_allowlist_passes_the_string(monkeypatch)
 
     client.iter_participants = iter_participants
     await groups.get_participants("@foobar")
-    assert seen == ["@foobar"]
+    # No list: the plain Telethon lookup (here the cached chat of that name), still an
+    # InputPeer rather than the raw string.
+    assert [peer_id(p) for p in seen] == [client.impostor.id]
     assert client.requests == []
 
 
