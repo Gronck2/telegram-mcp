@@ -131,6 +131,25 @@ the switch off nothing
 is recorded and results are byte-for-byte as before. Rationale and the plan to
 flip the default: `docs/adr/0003-structured-tool-errors.md`.
 
+## get_history paging and the truncated flag
+
+`get_history` has an extra path taken only when `min_id`, `offset_id` or
+`since_date` is given; without them it behaves and serialises exactly as before.
+The new path reads `iter_messages(limit=limit+1, offset_id, min_id, reply_to)` newest
+first and stops client-side at `since_date` (`YYYY-MM-DD`, UTC midnight, inclusive;
+Telegram's `offset_date` is only an upper bound and `reverse` would flip the order).
+`min_id` and `offset_id` are exclusive. The response then carries `has_more` and
+`next_offset_id` (oldest returned id, null when `has_more` is false; a stop at
+`since_date` also gives false) next to `results`; repeat with
+`offset_id=next_offset_id` to continue. Under fan-out each account's block has its
+own paging fields, so a pager passes `account`. Bad arguments are refused before any
+network call as `invalid_argument` (`limit < 1` only on this path).
+
+`message_to_dict` adds `"truncated": true` to a record only when the sanitizer clipped
+its text at 4096 characters (`sanitize_user_content_checked` reports the clip; the
+`... [truncated]` suffix is never sniffed). It covers the server clip only, not
+Telegram's own length limit, and appears in every tool built on `message_to_dict`.
+
 ## Deployment (owner's machine)
 
 Docker from `/Users/gronck/self/telegram-mcp` on branch `ours`, with
