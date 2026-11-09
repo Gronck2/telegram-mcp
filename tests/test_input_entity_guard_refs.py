@@ -126,3 +126,95 @@ def test_malformed_exemptions():
         assert runtime._is_malformed_handle(ok) is False
     for bad in ("@me", "@12345", "@-100123", "+abcde", "abcde_"):
         assert runtime._is_malformed_handle(bad) is True
+
+
+# ---- round 2: edge strings, resolver agreement, no-allowlist parity -------------------
+
+
+def _peer_key(peer):
+    for attr in ("channel_id", "user_id", "id"):
+        if getattr(peer, attr, None):
+            return getattr(peer, attr)
+    return type(peer).__name__
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref", ["@self", " self", "SELF\n", "telegram.me/foobar", "https://telegram.me/foobar"]
+)
+@pytest.mark.parametrize("resolver", ["resolve_entity", "resolve_input_entity"])
+async def test_self_handle_and_telegram_me_links_use_network_not_name(monkeypatch, ref, resolver):
+    allow(monkeypatch, "foobar")
+    client = make_client(title=ref, rows=[_channel(3003, ref, hash_=5)])
+    peer = await getattr(runtime, resolver)(ref, client)
+    assert _peer_key(peer) == REAL_ID
+    assert [type(r) for r in client.requests] == [functions.contacts.ResolveUsernameRequest]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref", [" Me", "Me ", "me ", " Me\t"])
+@pytest.mark.parametrize("resolver", ["resolve_entity", "resolve_input_entity"])
+async def test_whitespace_self_refs_refused_under_allowlist(monkeypatch, ref, resolver):
+    allow(monkeypatch, "foobar")
+    client = make_client(title=ref.strip(), rows=[_channel(3003, ref, hash_=5)])
+    with pytest.raises(ValueError, match="not a username or an id"):
+        await getattr(runtime, resolver)(ref, client)
+    assert client.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ref", [" foobar", "foobar ", "@FOOBAR"])
+async def test_resolvers_agree_on_padded_and_cased_handles(monkeypatch, ref):
+    allow(monkeypatch, "foobar")
+    keys = []
+    for resolver in ("resolve_entity", "resolve_input_entity"):
+        client = make_client(title=ref)
+        keys.append(_peer_key(await getattr(runtime, resolver)(ref, client)))
+        assert len(client.requests) == 1
+    assert keys == [REAL_ID, REAL_ID]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "t.me/+abc",
+        "t.me/joinchat/abc",
+        "https://t.me/joinchat/abc",
+        "tg://join?invite=abc",
+        "tg://resolve?domain=foobar",
+        "@ foobar",
+    ],
+)
+@pytest.mark.xfail(
+    strict=True,
+    reason="task 0004 round 2: invite links, tg://resolve and '@ x' fall through to the "
+    "name column (guard keys on parse_username, which rejects them)",
+)
+async def test_invite_and_tg_links_never_reach_name_column(monkeypatch, ref):
+    allow(monkeypatch, "foobar")
+    client = make_client(title=ref)
+    try:
+        peer = await runtime.resolve_input_entity(ref, client)
+    except Exception:
+        return
+    assert peer_id(peer) != IMPOSTOR_ID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ref", ["@self", "telegram.me/foobar", "Me ", " foobar", "@Me", "t.me/foobar"]
+)
+async def test_no_allowlist_parity_with_plain_telethon(ref):
+    guarded = make_client(title=ref)
+    plain = make_client(title=ref)
+    try:
+        got = _peer_key(await runtime.resolve_input_entity(ref, guarded))
+    except Exception as error:
+        got = type(error)
+    try:
+        want = _peer_key(await plain.get_input_entity(ref))
+    except Exception as error:
+        want = type(error)
+    assert got == want
+    assert [type(r) for r in guarded.requests] == [type(r) for r in plain.requests]
