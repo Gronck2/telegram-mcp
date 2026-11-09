@@ -47,9 +47,19 @@ an entry, and the display-name lookup is unreachable through it.
 - `t.me/name` is accepted (what `parse_username` accepts as a non-invite
   username) and normalised to `name`; previously the raw string was stored and
   only matched the identical caller string.
-- Phone entries stay valid: Telethon answers them from the phone column, never
-  from titles. The task text lists only ids and usernames; keeping phones
-  avoids breaking a pinned behaviour with no security gain.
+- Phone entries stay valid, but (round 4) Telethon does NOT answer a phone only
+  from the phone column: after the contacts list it falls back to
+  `session.get_input_entity`, which matches exact display names. Under an
+  allowlist `_phone_lookup` therefore resolves a phone string only from a
+  phone-row hit or a `GetContactsRequest` match and refuses otherwise, in both
+  resolvers (keeps `resolve_input_entity(s) == get_input_peer(resolve_entity(s))`).
+- Round 4: `self`, `@self`, `t.me/self` entries are inert with the usual warning
+  (Telethon resolves `self` to the own account); `_identifier_matches_allowlist`
+  never grants a self-ref caller string. Use the numeric own id.
+- Round 3/4 docs: `set_contact_alias` refuses every key Telethon reads as a
+  username (incl. 3-4 char Latin nicknames like `bob`, `anna`) in both modes
+  (`alias_shadows_real_identifier`); under an allowlist legacy aliases of that
+  shape are ignored for resolution, unchanged without one.
 - A variable with only ignored entries stays a non-empty set, so the allowlist
   is on and denies all (same rule as `@*`).
 

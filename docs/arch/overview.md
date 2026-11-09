@@ -68,6 +68,17 @@ Keep this file up to date when a change alters it.
    everything else (invites, links, misses) goes through `get_entity`. Numeric id
    strings become ints (never a phone/name lookup); `@ name` and `tg://` forms are
    refused like other malformed handles.
+   Phones and self (task 0005, round 4): under a list, a string that
+   `utils.parse_phone` accepts is resolved only by `_phone_lookup` (session
+   phone-row hit, else a `GetContactsRequest` match on `user.phone`), in both
+   resolvers; a miss is refused, never handed to `client.get_entity` or
+   `session.get_input_entity`, whose fallback matches a cached chat titled like
+   the phone. Entries `self`, `@self`, `t.me/self` are inert with a warning and
+   a self-ref caller string is never granted by string (use the own numeric id,
+   ADR 0002). `set_contact_alias` refuses every key Telethon reads as a
+   username (`is_unshadowable_identifier`, incl. 3-4 char Latin nicknames) in
+   both modes with `alias_shadows_real_identifier`; under a list, legacy aliases
+   of that shape are skipped by `apply_alias`.
    Without a list nothing changes.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.

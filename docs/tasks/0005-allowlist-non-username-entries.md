@@ -47,3 +47,10 @@ other entries are ignored with a warning.
   consistent with the existing "non-blank value with no usable entry" rule.
 - Id and username entries unchanged. No allowlist: unchanged. Tests under
   `tests/`, no real Telegram; CLAUDE.md gates pass.
+
+## Owner decisions
+
+- Round 4 review findings 1-3 (phone entries matching a chat titled like the
+  phone, `self` entries granting the own account by string, undocumented alias
+  refusal of username-shaped keys) are fixed in this task, not deferred
+  (owner, 2026-11-09).
