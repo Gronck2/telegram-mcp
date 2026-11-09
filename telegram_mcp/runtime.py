@@ -2566,8 +2566,16 @@ def _is_malformed_handle(identifier: Any) -> bool:
         return False
     if _parses_as_username(identifier) or utils.parse_username(identifier)[1]:
         return False
-    cleaned = identifier.strip().lstrip("@").strip()
-    return is_handle_like(identifier) or is_handle_like(cleaned) or "://" in identifier
+    # Same normalisation as _matches_chat_allowlist: whatever it would grant by string
+    # because the cleaned form is a username must reach Telegram as that username.
+    cleaned = identifier.strip().lstrip("@").strip().lower()
+    cleaned_name, cleaned_invite = utils.parse_username(cleaned) if cleaned else (None, False)
+    return (
+        bool(cleaned_name and not cleaned_invite)
+        or is_handle_like(identifier)
+        or is_handle_like(cleaned)
+        or "://" in identifier
+    )
 
 
 def _phone_cached(client, identifier: str) -> bool:
