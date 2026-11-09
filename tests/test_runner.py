@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from telethon.sessions import SQLiteSession
 
 from telegram_mcp import runner
 import telegram_mcp.runtime as runtime_module
@@ -631,6 +632,74 @@ def test_preset_session_name_next_to_labelled_accounts_is_optional(monkeypatch):
 
     assert set(accounts) == {"work", "default"}
     assert runtime_module.OPTIONAL_ACCOUNTS == {"default"}
+
+
+_REAL_BUILD_CLIENT = runtime_module._build_client
+
+
+def _unwritable_build(monkeypatch):
+    import sqlite3
+
+    def build(session, label):
+        if label == "default":
+            raise sqlite3.OperationalError("unable to open database file")
+        return object()
+
+    monkeypatch.setattr(runtime_module, "_build_client", build)
+
+
+def test_unwritable_default_session_dir_is_skipped_next_to_labelled_accounts(monkeypatch, caplog):
+    _only_session_env(
+        monkeypatch,
+        TELEGRAM_SESSION_STRING_WORK="work-string",
+        TELEGRAM_SESSION_NAME="/secret/readonly/telegram_mcp_session",
+    )
+    _unwritable_build(monkeypatch)
+
+    with caplog.at_level("WARNING", logger="telegram_mcp"):
+        accounts = runtime_module._discover_accounts()
+
+    assert set(accounts) == {"work"}
+    assert runtime_module.OPTIONAL_ACCOUNTS == set()
+    assert any("optional default file session" in r.getMessage() for r in caplog.records)
+    assert "/secret" not in caplog.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_real_telethon_session_in_readonly_dir_is_skipped(monkeypatch, tmp_path):
+    """Real Telethon SQLiteSession creation (inside tmp_path only) in a read-only dir."""
+    _only_session_env(monkeypatch, TELEGRAM_SESSION_STRING_WORK="work-string")
+    monkeypatch.setattr(runtime_module, "_build_client", _REAL_BUILD_CLIENT)
+    monkeypatch.setattr(runtime_module, "StringSession", lambda value=None: "str::" + value)
+    monkeypatch.setattr(
+        runtime_module,
+        "TelegramClient",
+        lambda session, *a, **k: (
+            SQLiteSession(session) if isinstance(session, str) else object()
+        ),
+        raising=False,
+    )
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    monkeypatch.setenv("TELEGRAM_SESSION_NAME", str(ro / "telegram_mcp_session"))
+    try:
+        accounts = runtime_module._discover_accounts()
+    finally:
+        ro.chmod(0o700)
+
+    assert set(accounts) == {"work"}
+    assert list(ro.iterdir()) == []
+
+
+def test_unwritable_required_default_session_dir_still_errors(monkeypatch):
+    import sqlite3
+
+    _only_session_env(monkeypatch, TELEGRAM_SESSION_NAME="telegram_session")
+    _unwritable_build(monkeypatch)
+
+    with pytest.raises(sqlite3.OperationalError):
+        runtime_module._discover_accounts()
 
 
 def test_lone_session_name_stays_required(monkeypatch):

@@ -140,12 +140,12 @@ Tracked `Dockerfile` (production stage) and `docker-compose.yml`:
 | `/tmp/telegram-mcp-locks` (single-instance session lock) | `singleton.py:107,121` | tmpfs `/tmp` |
 | `/tmp/telegram-mcp-session-locks` | `runtime.py:886-893` | tmpfs `/tmp` |
 | `/app/mcp_errors.log` (error log, WORKDIR) | `runtime.py:1217-1243` | read-only fs makes the handler fall back to console logging (code already handles it); `docker logs` keeps the errors. No code change |
-| `/app/telegram_audit.log` (deletion audit log, failure is silent) | `audit.py:20-25` | set `TELEGRAM_AUDIT_LOG` to a path on the state volume |
+| `/app/telegram_audit.log` (deletion audit log, failure is silent) | `audit.py:20-25` | image `ENV TELEGRAM_AUDIT_LOG=/home/appuser/.local/state/telegram-mcp/audit.log` (state volume), so plain `docker run` without compose keeps the audit too; compose sets the same value |
 | `~/.local/state/telegram-mcp/...` alias store | `runtime.py:2500-2610` | state volume (`/home/appuser/.local/state`) |
 | `~/.local/state/telegram-mcp/...` incoming event feed | `tools/events.py:121-156` | same state volume |
 | resolve_phone limiter state | `resolve_phone_limit.py:51-174` (`TELEGRAM_RESOLVE_PHONE_STATE_FILE`, default under state dir) | same state volume |
 | `~/.cache/telegram-mcp/transcripts` (fallback if `data/transcripts` is not creatable) | `transcription.py:272` | not reached with the mount; no extra mount |
-| `.session` file for `TELEGRAM_SESSION_NAME` accounts | `runtime.py:797-820, 967-979` | not used with a session string; if the owner uses a file session it needs its own mount (note in compose comments) |
+| `.session` file for `TELEGRAM_SESSION_NAME` accounts | `runtime.py` (`_resolve_session_path`, `_add_default_file_session`) | Telethon creates the file while constructing the client. Image `ENV TELEGRAM_SESSION_NAME=/home/appuser/.local/state/telegram-mcp/telegram_mcp_session` (state volume, dir created and owned by appuser); `.env.example` no longer presets a relative name (an env_file value would override the image value). If the file cannot be created and labelled accounts exist, the optional default account is skipped with a constant warning instead of crashing (base had a writable `/app`, so this never failed); a required default (no labelled accounts) still raises `sqlite3.OperationalError` |
 | `__pycache__` | n/a | already `PYTHONDONTWRITEBYTECODE=1` |
 | Whisper model dir (`TELEGRAM_TRANSCRIBE_WHISPER_MODEL_DIR`), temp dirs of `download_media` (`.telegram-mcp-download-*` next to the target) | `transcription.py:571`, `media.py:578` | follow their configured/allowed roots; only needed when enabled |
 | File-tools root (downloads, `/upload/`, `prepare_upload`) | `media.py:1281-1340` | new server root + mount (decision 3) |
@@ -185,7 +185,11 @@ Tracked `Dockerfile` (production stage) and `docker-compose.yml`:
 make the equivalent changes by hand (rebuild and restart are the owner's call):
 
 1. `Dockerfile.local`: remove `chown -R appuser:appuser /app`; chown only the
-   data directories (`/app/data`, the file root, the state dir).
+   data directories (`/app/data`, the file root, the state dir). Also set, as in
+   the tracked Dockerfile, `ENV TELEGRAM_SESSION_NAME=/home/appuser/.local/state/telegram-mcp/telegram_mcp_session`
+   and `ENV TELEGRAM_AUDIT_LOG=/home/appuser/.local/state/telegram-mcp/audit.log`
+   (a relative session name would be created in the read-only `/app`), and make
+   sure the owner's `.env` does not set a relative `TELEGRAM_SESSION_NAME`.
 2. `docker-compose.override.yml`: `read_only: true`, `tmpfs: [/tmp]`, a state
    volume at `/home/appuser/.local/state`, `TELEGRAM_AUDIT_LOG` on it, the
    existing transcript mount, and a `TELEGRAM_ALLOWED_ROOTS` server root with

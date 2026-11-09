@@ -930,6 +930,31 @@ def _acquire_session(pool: List[str]) -> str:
 OPTIONAL_ACCOUNTS: set[str] = set()
 
 
+def _add_default_file_session(accounts: dict[str, TelegramClient], session_name: str) -> None:
+    """Add the file-session default account from the unsuffixed TELEGRAM_SESSION_NAME.
+
+    The Docker image and .env.example preset TELEGRAM_SESSION_NAME, so next to
+    labelled accounts it often names a session nobody logged in to. The runner
+    skips such an optional default account instead of refusing to start.
+    """
+    optional_default = bool(accounts)
+    try:
+        accounts["default"] = _build_client(_resolve_session_path(session_name), "default")
+    except (sqlite3.OperationalError, OSError):
+        # Telethon creates the .session file while constructing the client. On a
+        # read-only filesystem that fails; an optional default account is skipped,
+        # a required one (no labelled accounts) keeps failing loudly.
+        if not optional_default:
+            raise
+        # Constant message: no paths or names from the environment in logs.
+        logging.getLogger("telegram_mcp").warning(
+            "Skipping the optional default file session: its session file is not writable"
+        )
+    else:
+        if optional_default:
+            OPTIONAL_ACCOUNTS.add("default")
+
+
 def _discover_accounts() -> dict[str, TelegramClient]:
     """Scan env vars to build account label -> TelegramClient mapping.
 
@@ -974,12 +999,7 @@ def _discover_accounts() -> dict[str, TelegramClient]:
         elif session_string:
             accounts["default"] = _build_client(StringSession(session_string), "default")
         elif session_name:
-            accounts["default"] = _build_client(_resolve_session_path(session_name), "default")
-            if len(accounts) > 1:
-                # The Docker image and .env.example preset TELEGRAM_SESSION_NAME, so next to
-                # labelled accounts it often names a session nobody logged in to. The runner
-                # skips such a default account instead of refusing to start.
-                OPTIONAL_ACCOUNTS.add("default")
+            _add_default_file_session(accounts, session_name)
 
     if not accounts:
         print(

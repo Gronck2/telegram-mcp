@@ -61,10 +61,13 @@ RUN adduser --disabled-password --gecos "" appuser && \
 
 USER appuser
 
-# Runtime environment variables (to be supplied at run/container start)
+# Runtime environment variables (to be supplied at run/container start). The session
+# file and the deletion audit log live on the state directory because /app is
+# read-only for appuser (and the root filesystem is read-only under compose).
 ENV TELEGRAM_API_ID="" \
     TELEGRAM_API_HASH="" \
-    TELEGRAM_SESSION_NAME="telegram_mcp_session" \
+    TELEGRAM_SESSION_NAME="/home/appuser/.local/state/telegram-mcp/telegram_mcp_session" \
+    TELEGRAM_AUDIT_LOG="/home/appuser/.local/state/telegram-mcp/audit.log" \
     TELEGRAM_SESSION_STRING=""
 
 CMD ["python", "main.py"]

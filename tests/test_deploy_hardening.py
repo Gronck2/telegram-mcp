@@ -86,6 +86,24 @@ def test_compose_sets_default_server_root_and_audit_log_on_state_volume():
     assert env["TELEGRAM_AUDIT_LOG"].startswith("/home/appuser/.local/state/")
 
 
+def test_image_session_file_and_audit_log_live_on_the_state_directory():
+    """/app is read-only for appuser: a relative session name or the default audit
+    log path would be unwritable (crash-loop / silently lost deletion audit)."""
+    stage = _production_stage()
+    state = "/home/appuser/.local/state/telegram-mcp/"
+    session = re.search(r'TELEGRAM_SESSION_NAME="([^"]*)"', stage)
+    audit = re.search(r'TELEGRAM_AUDIT_LOG="([^"]*)"', stage)
+    assert session and session.group(1).startswith(state)
+    assert audit and audit.group(1).startswith(state)
+    assert "mkdir -p" in stage and state.rstrip("/") in stage
+
+
+def test_env_example_does_not_preset_a_relative_session_name():
+    for line in _read(".env.example").splitlines():
+        if line.startswith("TELEGRAM_SESSION_NAME="):
+            assert line.split("=", 1)[1].startswith("/"), line
+
+
 def test_compose_drops_capabilities_and_privileges():
     _, service = _compose()
     assert service["cap_drop"] == ["ALL"]
