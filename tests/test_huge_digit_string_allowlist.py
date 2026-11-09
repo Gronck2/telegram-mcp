@@ -85,3 +85,81 @@ async def test_create_folder_under_allowlist_is_clean_denial(monkeypatch):
     assert "4300" not in out
     # Only the folder listing runs before the peer check; no peer is ever queried.
     assert {type(r).__name__ for r in client.requests} <= {"GetDialogFiltersRequest"}
+
+
+ALLOWLISTS = [None, "5", "*", "5, *"]
+
+
+def _set_allowlist(monkeypatch, allowlist):
+    if allowlist is None:
+        monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    else:
+        allow(monkeypatch, allowlist)
+
+
+async def _call(coro):
+    try:
+        return await coro
+    except ToolError as error:
+        return str(error)
+
+
+@pytest.mark.parametrize("allowlist", ALLOWLISTS)
+@pytest.mark.asyncio
+async def test_list_param_with_one_huge_item_refuses_whole_call(monkeypatch, allowlist):
+    _set_allowlist(monkeypatch, allowlist)
+    client = make_client()
+    use(monkeypatch, client)
+    out = await _call(groups.create_group(title="T", user_ids=[5, HUGE, 6], account=None))
+    assert "out of the valid integer range" in out
+    assert "4300" not in out
+    assert client.requests == []
+
+
+@pytest.mark.parametrize("allowlist", ALLOWLISTS)
+@pytest.mark.parametrize("spelling", [HUGE, "-" + HUGE])
+@pytest.mark.asyncio
+async def test_peer_subject_tool_huge_digits_clean_error(monkeypatch, allowlist, spelling):
+    from telegram_mcp.tools import contacts
+
+    _set_allowlist(monkeypatch, allowlist)
+    monkeypatch.setattr(contacts, "ensure_connected", lambda client=None: _none())
+    client = make_client()
+    monkeypatch.setattr(contacts, "get_client", lambda account=None: client)
+    use(monkeypatch, client)
+    out = await _call(contacts.block_user(user_id=spelling))
+    assert "out of the valid integer range" in out
+    assert "4300" not in out
+    assert client.requests == []
+
+
+async def _none():
+    return None
+
+
+@pytest.mark.parametrize("allowlist", ALLOWLISTS)
+@pytest.mark.asyncio
+async def test_raise_errors_variant_raises_clean_range_error(monkeypatch, allowlist):
+    _set_allowlist(monkeypatch, allowlist)
+    client = make_client()
+    use(monkeypatch, client)
+    with pytest.raises(ToolError) as excinfo:
+        await groups.get_participants(chat_id=HUGE)
+    assert "out of the valid integer range" in str(excinfo.value)
+    assert "4300" not in str(excinfo.value)
+    assert client.requests == []
+
+
+@pytest.mark.parametrize("allowlist", ALLOWLISTS)
+@pytest.mark.parametrize("suffix", ["", "\n", "\r\n\t", " "])
+@pytest.mark.asyncio
+async def test_error_text_is_bounded_and_has_no_control_chars(monkeypatch, allowlist, suffix):
+    _set_allowlist(monkeypatch, allowlist)
+    client = make_client()
+    use(monkeypatch, client)
+    out = await messages.get_messages(chat_id="1" * 5000 + suffix)
+    assert "out of the valid integer range" in out
+    assert len(out) < 1000
+    assert "1" * 41 not in out
+    assert all(ch.isprintable() or ch == "\n" for ch in out)
+    assert client.requests == []
