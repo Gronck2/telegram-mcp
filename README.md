@@ -62,6 +62,8 @@ The server currently includes 80+ MCP tools grouped into these areas:
 
 `get_history` returns the newest `limit` messages, newest first. With `min_id` (only ids above it), `offset_id` (only ids below it, for paging backwards) and/or `since_date` (`YYYY-MM-DD`, 00:00 UTC) the response also has `has_more` and `next_offset_id`; repeat the call with `offset_id=next_offset_id` to continue. With several accounts and `account` omitted, each account's block carries its own paging fields, so pass `account` when paging. A message record has `"truncated": true` only when the server clipped its text at 4096 characters (the text then ends with `... [truncated]`); Telegram's own length limit is not flagged.
 
+`get_messages_by_ids` reads several messages of one chat by a list of ids (1 to 100 distinct ints) and returns `{"results": [...], "missing_ids": [...]}`: the same records as `get_history` in request order, plus the ids that do not exist or were deleted. It is read-only and follows the read allowlists; it adds no reply context (use `get_message_context`).
+
 `list_inline_buttons` describes each button by row, column and `kind` (what pressing it does), for inline buttons and reply keyboards. `press_inline_button` presses `callback` and `game` buttons, returns the bot's answer with `alert` and `url`, and refuses buttons that need the 2FA password.
 
 `get_message_reactions` returns an empty list for a message with no reactions. To reuse a custom reaction, pass the returned `custom:<document_id>` value to `send_reaction`.
