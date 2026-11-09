@@ -119,7 +119,9 @@ Multi-account fan-out (read-only tool, `account` omitted):
 
 - `isError` is true only when every account failed (same rule as the existing
   all-`ToolError` branch, 942). If at least one account succeeded the result is
-  a normal result (data is usable), so `isError` is false.
+  a normal result (data is usable), so `isError` is false. This applies to
+  handled failures (`ToolError`, formatted error strings); an exception that
+  escapes one account still fails the whole call fail-fast, as on base.
 - In both cases `_meta` lists the per-account failures:
   `{"telegram-mcp/errors": [{"account": "<label>", "kind": ..., "retry_after": ...}]}`.
   The top-level single-error object is used when exactly one call produced the
