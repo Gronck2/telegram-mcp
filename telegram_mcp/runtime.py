@@ -2532,6 +2532,63 @@ def alias_failure(original: Any, identifier: Any) -> Optional[AliasNeedsUser]:
     )
 
 
+def _is_malformed_handle(identifier: Any) -> bool:
+    """True for a handle-shaped string that is no username, id, phone or self reference.
+
+    ``abcde_``, ``1abcde``, ``ab__cde`` and names over 32 characters pass the loose
+    handle check but cannot be real usernames, so only a cached display name could
+    ever answer them.
+    """
+    if not isinstance(identifier, str) or not is_handle_like(identifier):
+        return False
+    bare = identifier.strip().lstrip("@")
+    if (
+        identifier.strip().startswith("+")
+        or bare.lstrip("-").isdigit()
+        or bare.lower() in _SELF_REFS
+    ):
+        return False
+    return not _is_username_identifier(identifier)
+
+
+def _username_cached(client, identifier: str) -> bool:
+    """True if the session cache holds this exact username (primary usernames only).
+
+    Any failure counts as a miss, which sends the lookup to the network, never to the
+    display-name column.
+    """
+    try:
+        name, is_invite = utils.parse_username(identifier)
+        if not name or is_invite:
+            return False
+        return bool(client.session.get_entity_rows_by_username(name))
+    except Exception:
+        return False
+
+
+def _guarded_input_getter(client):
+    """get_input_entity that never answers a username from the display-name column.
+
+    Telethon's session tries the cached display name / title of every chat when a
+    username misses (always for secondary usernames). Under a chat allowlist the
+    string was matched as a username, so a miss goes to ResolveUsernameRequest.
+    """
+
+    async def get(identifier):
+        if _is_username_identifier(identifier) and not _username_cached(client, identifier):
+            return utils.get_input_peer(await client.get_entity(identifier))
+        return await client.get_input_entity(identifier)
+
+    return get
+
+
+def _lookup_callable(client, getter: str):
+    """The client's lookup method; under an allowlist the username-safe input lookup."""
+    if getter == "get_input_entity" and is_chat_allowlist_enabled():
+        return _guarded_input_getter(client)
+    return getattr(client, getter)
+
+
 async def _resolve_with_retries(
     getter: str, identifier: Union[int, str], client, label: str, try_marked: bool = True
 ):
@@ -2542,7 +2599,7 @@ async def _resolve_with_retries(
     Telethon's marked chat/channel variants.
     """
     await ensure_connected(client)
-    get = getattr(client, getter)
+    get = _lookup_callable(client, getter)
     last_error = None
     try:
         try:
@@ -2599,6 +2656,11 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
         # An id that came from a saved alias is exact; guessing marked variants of
         # it could deliver to a completely unrelated chat.
         from_alias = identifier is not original
+        if is_chat_allowlist_enabled() and _is_malformed_handle(identifier):
+            raise ValueError(
+                f"{identifier!r} is not a username or an id; chat access is restricted "
+                "by an allowlist, so display names cannot be used."
+            )
         return await _resolve_with_retries(
             getter, identifier, client, label, try_marked=not from_alias
         )
