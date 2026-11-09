@@ -48,8 +48,10 @@ an entry, and the display-name lookup is unreachable through it.
   username) and normalised to `name`; previously the raw string was stored and
   only matched the identical caller string.
 - Phone entries stay valid, but (round 4) Telethon does NOT answer a phone only
-  from the phone column: after the contacts list it falls back to
-  `session.get_input_entity`, which matches exact display names. Under an
+  from the phone column: `client.get_input_entity` goes to
+  `session.get_input_entity`, which on a phone-row miss matches exact display
+  names (Telethon 1.45 `get_entity` raises on a contacts miss; pinned as well,
+  defence in depth). Under an
   allowlist `_phone_lookup` therefore resolves a phone string only from a
   phone-row hit or a `GetContactsRequest` match and refuses otherwise, in both
   resolvers (keeps `resolve_input_entity(s) == get_input_peer(resolve_entity(s))`).

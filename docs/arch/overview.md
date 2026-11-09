@@ -71,9 +71,10 @@ Keep this file up to date when a change alters it.
    Phones and self (task 0005, round 4): under a list, a string that
    `utils.parse_phone` accepts is resolved only by `_phone_lookup` (session
    phone-row hit, else a `GetContactsRequest` match on `user.phone`), in both
-   resolvers; a miss is refused, never handed to `client.get_entity` or
-   `session.get_input_entity`, whose fallback matches a cached chat titled like
-   the phone. Entries `self`, `@self`, `t.me/self` are inert with a warning and
+   resolvers; a miss is refused, never handed to `session.get_input_entity`,
+   whose phone-row-miss fallback matches a cached chat titled like the phone
+   (`client.get_entity` is pinned too, defence in depth; Telethon 1.45 raises
+   there on a contacts miss). Entries `self`, `@self`, `t.me/self` are inert with a warning and
    a self-ref caller string is never granted by string (use the own numeric id,
    ADR 0002). `set_contact_alias` refuses every key Telethon reads as a
    username (`is_unshadowable_identifier`, incl. 3-4 char Latin nicknames) in

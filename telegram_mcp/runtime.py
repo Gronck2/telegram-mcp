@@ -1258,7 +1258,7 @@ def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional
         # Canonical "+digits": no username starts with "+", so it cannot be reached by
         # a handle-shaped string; callers are compared via parse_phone only. Under an
         # allowlist the resolvers answer a phone only from contacts or the phone
-        # column (_phone_lookup): Telethon's own fallback would try display names.
+        # column (_phone_lookup): session.get_input_entity would try display names.
         return "+" + phone
     _warn_ignored_entry(token, source)
     return _INERT_CHAT_ENTRY
@@ -2714,11 +2714,12 @@ def _username_cached(client, identifier: str) -> bool:
 async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
     """Resolve a phone string without ever reaching the display-name column.
 
-    Telethon's ``get_entity`` tries the contacts list, then falls back to
-    ``session.get_input_entity``, which on a phone-row miss matches the exact
-    display name / title of a cached chat (a chat called ``+15551234567``). Under
-    an allowlist only a phone-row hit or a contacts entry with this phone answers;
-    anything else is refused.
+    Telethon's ``get_input_entity`` (``session.get_input_entity``) falls back, on a
+    phone-row miss, to the exact display name / title of a cached chat (a chat
+    called ``+15551234567``). Telethon 1.45 ``get_entity`` raises on a contacts
+    miss instead, but it is pinned here too as defence in depth against future
+    Telethon versions. Under an allowlist only a phone-row hit or a contacts entry
+    with this phone answers; anything else is refused.
     """
     phone = utils.parse_phone(identifier)
     if _phone_cached(client, identifier):

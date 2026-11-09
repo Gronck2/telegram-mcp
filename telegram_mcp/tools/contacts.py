@@ -842,9 +842,9 @@ async def set_contact_alias(
                     "saved": False,
                     "reason": "alias_shadows_real_identifier",
                     "detail": (
-                        f"'{alias}' looks like a username, phone, numeric ID or self-reference "
-                        "and would shadow the real one. Use a distinct nickname, e.g. add a "
-                        "second word."
+                        f"'{alias}' looks like a username, numeric ID, '+'-led phone "
+                        "or self-reference and would shadow the real one. Use a distinct "
+                        "nickname, e.g. add a second word."
                     ),
                 }
             )
