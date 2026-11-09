@@ -76,7 +76,10 @@ Keep this file up to date when a change alters it.
    (`client.get_entity` is pinned too, defence in depth; Telethon 1.45 raises
    there on a contacts miss). Entries `self`, `@self`, `t.me/self` are inert with a warning and
    a self-ref caller string is never granted by string (use the own numeric id,
-   ADR 0002). `set_contact_alias` refuses every key Telethon reads as a
+   ADR 0002). `validate_id` (task 0006) converts a string to an int only when it
+   fully matches `-?\d+`; a `+`-led string `parse_phone` accepts stays a string, so
+   `"+15551234567"` is never read as user/channel id 15551234567.
+   `set_contact_alias` refuses every key Telethon reads as a
    username (`is_unshadowable_identifier`, incl. 3-4 char Latin nicknames) in
    both modes with `alias_shadows_real_identifier`; under a list, legacy aliases
    of that shape are skipped by `apply_alias`.

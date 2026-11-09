@@ -1919,8 +1919,18 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
 
                     # Handle string IDs
                     if isinstance(value, str):
+                        stripped = value.strip()
+                        # A "+"-led phone is a phone, never the peer whose id has the
+                        # same digits: int() would drop the "+" and the allowlist
+                        # would judge (and the tool address) the wrong peer.
+                        if stripped.startswith("+") and utils.parse_phone(stripped):
+                            return value, None
                         try:
-                            int_value = int(value)
+                            # Same numeric rule as the allowlist parser; int() alone
+                            # also takes "1_000", "+5" and padded signs.
+                            if not _NUMERIC_CHAT_ID_RE.fullmatch(stripped):
+                                raise ValueError(value)
+                            int_value = int(stripped)
                             if not (-(2**63) <= int_value <= 2**63 - 1):
                                 return (
                                     None,
