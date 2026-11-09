@@ -834,7 +834,7 @@ async def set_contact_alias(
         key = alias_key(alias)
         if not key:
             return "Alias must not be empty."
-        if is_handle_like(key):
+        if is_unshadowable_identifier(key):
             # An alias wins over Telethon's own lookup, so "me" or "bob" would
             # silently hijack self / a real @bob for every tool.
             return format_tool_result(
@@ -842,9 +842,9 @@ async def set_contact_alias(
                     "saved": False,
                     "reason": "alias_shadows_real_identifier",
                     "detail": (
-                        f"'{alias}' looks like a username, phone, numeric ID or self-reference "
-                        "and would shadow the real one. Use a distinct nickname, e.g. add a "
-                        "second word."
+                        f"'{alias}' looks like a username, numeric ID, '+'-led phone "
+                        "or self-reference and would shadow the real one. Use a distinct "
+                        "nickname, e.g. add a second word."
                     ),
                 }
             )

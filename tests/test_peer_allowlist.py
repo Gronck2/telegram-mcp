@@ -1177,6 +1177,13 @@ async def test_hidden_alias_reference_in_a_tool_call_does_not_leak(monkeypatch, 
     runtime.save_aliases({"vanya the dev": {"id": 303, "name": "Hidden Vanya"}})
     allow(monkeypatch, TELEGRAM_ALLOWED_CHAT_IDS="101")
 
+    async def connected(c=None):
+        return None
+
+    for module in (chats, runtime):
+        monkeypatch.setattr(module, "get_client", lambda account=None: client)
+        monkeypatch.setattr(module, "ensure_connected", connected)
+
     text = await chats.get_chat("vanya the dev")
 
     assert "Hidden Vanya" not in text

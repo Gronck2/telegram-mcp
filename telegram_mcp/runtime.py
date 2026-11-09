@@ -1202,23 +1202,71 @@ def _chat_id_tokens(
     return None
 
 
-def _parse_chat_id_token(token: str) -> Optional[Union[int, str]]:
-    """Parse one allowlist token into an ID, handle, wildcard or inert sentinel."""
+# Placeholder for an entry that is neither an id, "*", a username nor a phone. No identifier
+# can equal it ("@" is stripped before comparing), so it matches nothing.
+_INERT_CHAT_ENTRY = "@" + CHAT_ALLOWLIST_WILDCARD
+# (variable, token) pairs already reported, so re-parsing the environment on every
+# access check does not repeat the startup warning.
+_WARNED_IGNORED_ENTRIES: set[tuple[str, str]] = set()
+
+
+def _warn_ignored_entry(token: str, source: str) -> None:
+    key = (source, token)
+    if key in _WARNED_IGNORED_ENTRIES:
+        return
+    _WARNED_IGNORED_ENTRIES.add(key)
+    # stderr, not the logger: persistent log messages must stay constant strings, and
+    # the owner needs to see which entry was dropped.
+    print(
+        f"WARNING: ignoring {source} entry {sanitize_name(token, max_length=64)!r}: "
+        "only numeric ids, '*', usernames and phone numbers are accepted",
+        file=sys.stderr,
+    )
+
+
+def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional[Union[int, str]]:
+    """Parse one allowlist token into an ID, username, wildcard or inert sentinel.
+
+    Accepted: numeric marked ids, phone numbers (kept as before: Telethon looks
+    them up by phone; stored canonically as ``+<digits>``), ``*`` and usernames
+    (``name``, ``@name``, any case, ``t.me/name`` forms; stored as the
+    lower-cased username that Telethon's ``parse_username`` extracts).
+    Anything else (free text, invite links, malformed handles such as
+    ``1abcd/``) becomes the inert sentinel with a warning: a string entry could
+    only be matched by a caller string that Telethon then resolves by chat
+    title. ``@*`` is inert as well.
+    """
     if token == CHAT_ALLOWLIST_WILDCARD:
         return CHAT_ALLOWLIST_WILDCARD
     if _NUMERIC_CHAT_ID_RE.fullmatch(token):
         return int(token)
     clean_handle = token.lstrip("@").strip().lower()
+    if not clean_handle:
+        return None
     if clean_handle == CHAT_ALLOWLIST_WILDCARD:
-        # "@*" is not the wildcard: keep a sentinel no identifier can match
-        # (identifiers are stripped of "@" before comparing) so it still
-        # counts as an entry and never widens access.
-        return "@" + CHAT_ALLOWLIST_WILDCARD
-    return clean_handle or None
+        return _INERT_CHAT_ENTRY
+    name, is_invite = utils.parse_username(clean_handle)
+    if name and not is_invite:
+        if name.lower() in _SELF_REFS:
+            # Telethon resolves "self" to the own account, not to a user named self;
+            # a string grant would reach Saved Messages without the own id listed.
+            _warn_ignored_entry(token, source)
+            return _INERT_CHAT_ENTRY
+        return name.lower()
+    phone = utils.parse_phone(token)
+    if phone:
+        # Canonical "+digits": no username starts with "+", so it cannot be reached by
+        # a handle-shaped string; callers are compared via parse_phone only. Under an
+        # allowlist the resolvers answer a phone only from contacts or the phone
+        # column (_phone_lookup): session.get_input_entity would try display names.
+        return "+" + phone
+    _warn_ignored_entry(token, source)
+    return _INERT_CHAT_ENTRY
 
 
 def _parse_allowed_chat_ids(
     raw: Optional[Union[str, Iterable[Union[int, str]]]],
+    source: str = "chat allowlist",
 ) -> Optional[set[Union[int, str]]]:
     """Parse TELEGRAM_ALLOWED_CHAT_IDS into a set of allowed marked IDs and usernames.
 
@@ -1237,13 +1285,15 @@ def _parse_allowed_chat_ids(
     e.g. TELEGRAM_ALLOWED_READ_CHATS=* with a narrow write list). ``@*`` is not
     the wildcard. A non-blank value with no valid entry yields an empty set
     (allowlist enabled, deny all); blank or empty input yields None (unset).
+    Other entries (free text, invite links, malformed handles) are ignored with one
+    warning each and count as entries, so a value of only such entries denies all.
     """
     tokens = _chat_id_tokens(raw)
     if tokens is None:
         return None
     allowed: set[Union[int, str]] = set()
     for token in tokens:
-        entry = _parse_chat_id_token(token)
+        entry = _parse_chat_id_token(token, source)
         if entry is not None:
             allowed.add(entry)
 
@@ -1254,23 +1304,34 @@ def _parse_allowed_chat_ids(
 
 def _load_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
     """Load ALLOWED_CHAT_IDS from the TELEGRAM_ALLOWED_CHAT_IDS environment variable."""
-    return _parse_allowed_chat_ids(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"))
+    return _parse_allowed_chat_ids(
+        os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"), "TELEGRAM_ALLOWED_CHAT_IDS"
+    )
 
 
 # Initial load from environment
 ALLOWED_CHAT_IDS = _load_allowed_chat_ids()
 
 
+def warn_ignored_chat_allowlist_entries() -> None:
+    """Parse all three allowlist variables once so ignored entries are reported at startup."""
+    for var in ("TELEGRAM_ALLOWED_CHAT_IDS", *_CHAT_ACCESS_ENV.values()):
+        _parse_allowed_chat_ids(os.getenv(var), var)
+
+
+warn_ignored_chat_allowlist_entries()
+
+
 def get_effective_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
     """Return TELEGRAM_ALLOWED_CHAT_IDS (read and write access), or None if unset."""
     env_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS")
     if env_raw is not None:
-        return _parse_allowed_chat_ids(env_raw)
+        return _parse_allowed_chat_ids(env_raw, "TELEGRAM_ALLOWED_CHAT_IDS")
     return ALLOWED_CHAT_IDS
 
 
 def _mode_allowed_chat_ids(access: str) -> Optional[set[Union[int, str]]]:
-    return _parse_allowed_chat_ids(os.getenv(_CHAT_ACCESS_ENV[access]))
+    return _parse_allowed_chat_ids(os.getenv(_CHAT_ACCESS_ENV[access]), _CHAT_ACCESS_ENV[access])
 
 
 def get_chat_allowlist(access: str) -> Optional[set[Union[int, str]]]:
@@ -1295,25 +1356,55 @@ def is_chat_allowlist_enabled() -> bool:
     return get_chat_allowlist(CHAT_ACCESS_READ) is not None
 
 
+def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier: Any) -> bool:
+    """String/int identifier check of the allowlist (entity checks are separate)."""
+    if chat_identifier is None or isinstance(chat_identifier, bool):
+        return False
+    if isinstance(chat_identifier, int):
+        return chat_identifier in allowed
+    if not isinstance(chat_identifier, str):
+        return False
+    ident = chat_identifier.strip()
+    if _NUMERIC_CHAT_ID_RE.fullmatch(ident):
+        return int(ident) in allowed
+    phone = utils.parse_phone(ident)
+    if phone:
+        # Only a "+"-led string Telethon itself reads as a phone (no "@" stripping,
+        # so "@555-123-4567" is not one) may match a phone entry. Forms without "+"
+        # ("555 123 4567") are not is_handle_like, so a saved alias can shadow them
+        # in apply_alias and they must not grant the phone entry's access.
+        return ident.startswith("+") and "+" + phone in allowed
+    clean = ident.lstrip("@").strip().lower()
+    # The string grant needs the same "no alias can shadow this" predicate apply_alias
+    # uses, or an alias could redirect a granted string to another chat.
+    return (
+        bool(clean)
+        and not clean.startswith("+")
+        and clean not in _SELF_REFS
+        and clean in allowed
+        and is_unshadowable_identifier(ident)
+    )
+
+
+def _secondary_username_allowed(allowed: set[Union[int, str]], entity: Any) -> bool:
+    extra = getattr(entity, "usernames", None)
+    if not isinstance(extra, (list, tuple)):
+        return False
+    for item in extra:
+        name = getattr(item, "username", None)
+        if getattr(item, "active", None) is True and name and str(name).lower() in allowed:
+            return True
+    return False
+
+
 def _matches_chat_allowlist(
     allowed: set[Union[int, str]], chat_identifier: Any, entity: Any
 ) -> bool:
     if CHAT_ALLOWLIST_WILDCARD in allowed:
         return True
 
-    if chat_identifier is not None and not isinstance(chat_identifier, bool):
-        if isinstance(chat_identifier, int):
-            if chat_identifier in allowed:
-                return True
-        elif isinstance(chat_identifier, str):
-            ident = chat_identifier.strip()
-            if _NUMERIC_CHAT_ID_RE.fullmatch(ident):
-                if int(ident) in allowed:
-                    return True
-            else:
-                clean = ident.lstrip("@").strip().lower()
-                if clean and clean in allowed:
-                    return True
+    if _identifier_matches_allowlist(allowed, chat_identifier):
+        return True
 
     if entity is not None:
         try:
@@ -1330,12 +1421,8 @@ def _matches_chat_allowlist(
         # Secondary / collectible usernames: only entries Telegram marks active
         # (inactive ones are not resolvable and may be taken by someone else). An
         # entity without ``usernames`` (min entities) simply does not match.
-        extra = getattr(entity, "usernames", None)
-        if isinstance(extra, (list, tuple)):
-            for item in extra:
-                name = getattr(item, "username", None)
-                if getattr(item, "active", None) is True and name and str(name).lower() in allowed:
-                    return True
+        if _secondary_username_allowed(allowed, entity):
+            return True
 
     return False
 
@@ -2280,6 +2367,17 @@ def is_handle_like(value: str) -> bool:
     )
 
 
+def is_unshadowable_identifier(value: str) -> bool:
+    """True if no saved alias may stand for ``value`` while an allowlist is active.
+
+    Superset of ``is_handle_like``: also every string Telethon's ``parse_username``
+    accepts (3-4 character names, Unicode ``\\w`` names, t.me links). Shared by
+    ``apply_alias``, ``set_contact_alias`` and the allowlist's string grant so the
+    three can never diverge.
+    """
+    return is_handle_like(value) or _parses_as_username(value)
+
+
 def _same_word(a: str, b: str) -> bool:
     """True when two tokens are the same word, tolerating an inflected ending.
 
@@ -2368,6 +2466,10 @@ def apply_alias(identifier: Union[int, str]) -> Union[int, str]:
         return identifier
     if is_handle_like(identifier):
         return identifier  # a real username/phone/id/self reference is never shadowed
+    if is_chat_allowlist_enabled() and is_unshadowable_identifier(identifier):
+        # Legacy alias keys that Telethon reads as a username (3-4 chars, Unicode \\w)
+        # keep resolving without an allowlist but never under one.
+        return identifier
     record = load_aliases().get(alias_key(identifier))
     if not record:
         return identifier
@@ -2555,10 +2657,15 @@ def _is_malformed_handle(identifier: Any) -> bool:
     ``abcde_``, ``1abcde``, ``ab__cde``, names over 32 characters, ``@``-prefixed ids,
     ``@ name`` and unknown links such as ``tg://resolve?domain=name`` are no usernames,
     yet the allowlist would accept them by string (``@`` and spaces are stripped) while
-    only the display-name column could answer. Self references, phones, ids and invite
-    links are not usernames either, but Telethon answers them without the name column,
-    so they are exempt. Plain free text (``My Group``) cannot match an allowlist entry
-    by string and is left to the id check on the resolved entity.
+    only the display-name column could answer. Self references, real phones (a string
+    ``utils.parse_phone`` accepts as is), ids and invite links are not usernames either,
+    but the name column must not answer them either (phones are pinned to contacts and
+    the phone column by ``_phone_lookup``; the rest never reach it), so they are exempt.
+    A value that is a phone only once ``@`` is stripped (``@555-123-4567``) is refused. Plain free
+    text (``My Group``) cannot match an allowlist entry by string: ``_parse_chat_id_token``
+    keeps only ids, ``*``, valid usernames and phones (compared via ``parse_phone`` only,
+    never by the stripped string), and turns every other entry into an inert one. It is
+    left to the id check on the resolved entity.
     """
     if not isinstance(identifier, str):
         return False
@@ -2570,6 +2677,8 @@ def _is_malformed_handle(identifier: Any) -> bool:
     # because the cleaned form is a username must reach Telegram as that username.
     cleaned = identifier.strip().lstrip("@").strip().lower()
     cleaned_name, cleaned_invite = utils.parse_username(cleaned) if cleaned else (None, False)
+    if cleaned and utils.parse_phone(cleaned):
+        return True  # phone only after stripping "@": Telethon would try the name column
     return (
         bool(cleaned_name and not cleaned_invite)
         or is_handle_like(identifier)
@@ -2602,6 +2711,44 @@ def _username_cached(client, identifier: str) -> bool:
         return False
 
 
+async def _phone_lookup(client, identifier: str, as_entity: bool) -> Any:
+    """Resolve a phone string without ever reaching the display-name column.
+
+    Telethon's ``get_input_entity`` (``session.get_input_entity``) falls back, on a
+    phone-row miss, to the exact display name / title of a cached chat (a chat
+    called ``+15551234567``). Telethon 1.45 ``get_entity`` raises on a contacts
+    miss instead, but it is pinned here too as defence in depth against future
+    Telethon versions. Under an allowlist only a phone-row hit or a contacts entry
+    with this phone answers; anything else is refused.
+    """
+    phone = utils.parse_phone(identifier)
+    if _phone_cached(client, identifier):
+        peer = await client.get_input_entity(identifier)
+        return await client.get_entity(peer) if as_entity else peer
+    try:
+        found = await client(functions.contacts.GetContactsRequest(0))
+    except BotMethodInvalidError as error:
+        raise ValueError("Cannot get entity by phone number as a bot") from error
+    for user in getattr(found, "users", None) or []:
+        if getattr(user, "phone", None) == phone:
+            return user if as_entity else utils.get_input_peer(user)
+    raise ValueError(
+        f"{identifier!r} is not in the contacts or the phone cache; chat access is "
+        "restricted by an allowlist, so a phone cannot be matched by display name."
+    )
+
+
+def _guarded_entity_getter(client):
+    """get_entity that answers phone strings only through ``_phone_lookup``."""
+
+    async def get(identifier):
+        if isinstance(identifier, str) and utils.parse_phone(identifier):
+            return await _phone_lookup(client, identifier, True)
+        return await client.get_entity(identifier)
+
+    return get
+
+
 def _guarded_input_getter(client):
     """get_input_entity that always names the same peer as ``get_entity`` would.
 
@@ -2620,8 +2767,8 @@ def _guarded_input_getter(client):
             return types.InputPeerSelf()
         if isinstance(identifier, str):
             if utils.parse_phone(identifier):
-                cached = _phone_cached(client, identifier)
-            elif _parses_as_username(identifier):
+                return await _phone_lookup(client, identifier, False)
+            if _parses_as_username(identifier):
                 cached = _username_cached(client, identifier)
             else:
                 cached = False
@@ -2634,8 +2781,11 @@ def _guarded_input_getter(client):
 
 def _lookup_callable(client, getter: str):
     """The client's lookup method; under an allowlist the username-safe input lookup."""
-    if getter == "get_input_entity" and is_chat_allowlist_enabled():
-        return _guarded_input_getter(client)
+    if is_chat_allowlist_enabled():
+        if getter == "get_input_entity":
+            return _guarded_input_getter(client)
+        if getter == "get_entity":
+            return _guarded_entity_getter(client)
     return getattr(client, getter)
 
 

@@ -34,7 +34,10 @@ Keep this file up to date when a change alters it.
    comes from `readOnlyHint` (see `chat_access_for_tool`), except
    `READ_ACCESS_TOOLS` (read) and `BOTH_ACCESS_TOOLS` (`press_inline_button`,
    `vote_poll`: read and write). A non-blank value with no valid entry denies
-   all; `@*` is not the wildcard. While a list is set, invite joins resolve the
+   all; `@*` is not the wildcard. Entries that are not numeric ids, `*`,
+   usernames or phone numbers (free text, invite links, malformed handles)
+   are parsed to an inert entry that matches nothing, with a stderr warning at
+   startup (`_parse_chat_id_token`, task 0005). While a list is set, invite joins resolve the
    invite first and need write access to its chat (plain invites are refused).
    Tools that name a user rather than a chat are covered by peer helpers in
    `runtime.py` (ADR 0002): `validate_id(..., peer_subject=True)` /
@@ -65,6 +68,18 @@ Keep this file up to date when a change alters it.
    everything else (invites, links, misses) goes through `get_entity`. Numeric id
    strings become ints (never a phone/name lookup); `@ name` and `tg://` forms are
    refused like other malformed handles.
+   Phones and self (task 0005, round 4): under a list, a string that
+   `utils.parse_phone` accepts is resolved only by `_phone_lookup` (session
+   phone-row hit, else a `GetContactsRequest` match on `user.phone`), in both
+   resolvers; a miss is refused, never handed to `session.get_input_entity`,
+   whose phone-row-miss fallback matches a cached chat titled like the phone
+   (`client.get_entity` is pinned too, defence in depth; Telethon 1.45 raises
+   there on a contacts miss). Entries `self`, `@self`, `t.me/self` are inert with a warning and
+   a self-ref caller string is never granted by string (use the own numeric id,
+   ADR 0002). `set_contact_alias` refuses every key Telethon reads as a
+   username (`is_unshadowable_identifier`, incl. 3-4 char Latin nicknames) in
+   both modes with `alias_shadows_real_identifier`; under a list, legacy aliases
+   of that shape are skipped by `apply_alias`.
    Without a list nothing changes.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.
