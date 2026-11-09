@@ -60,6 +60,24 @@ async def test_validate_id_tool_clean_error_without_allowlist(monkeypatch, spell
     assert client.requests == []
 
 
+@pytest.mark.parametrize("allowlist", [None, "5", "*"])
+@pytest.mark.parametrize("value", [10**5000, -(10**5000), 2**63], ids=["pos", "neg", "edge"])
+@pytest.mark.asyncio
+async def test_huge_int_chat_id_is_clean_range_error(monkeypatch, allowlist, value):
+    # A JSON integer is parsed to an arbitrary-size Python int; str() of one beyond
+    # 4300 digits raises, so the error text must not format the whole value.
+    if allowlist is None:
+        monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    else:
+        allow(monkeypatch, allowlist)
+    client = make_client()
+    use(monkeypatch, client)
+    out = await messages.get_messages(chat_id=value)
+    assert "out of the valid integer range" in out
+    assert len(out) < 1000
+    assert client.requests == []
+
+
 @pytest.mark.asyncio
 async def test_forward_send_as_under_allowlist_is_clean_denial(monkeypatch):
     allow(monkeypatch, "5")

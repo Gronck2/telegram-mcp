@@ -1913,9 +1913,12 @@ def validate_id(*param_names_to_validate, raise_errors=False, peer_subject=False
                     # Handle integer IDs
                     if isinstance(value, int):
                         if not (-(2**63) <= value <= 2**63 - 1):
+                            # str() of an int beyond 4300 digits raises; never echo
+                            # more than a short prefix of the caller's value.
+                            shown = str(value)[:40] if value.bit_length() <= 1024 else "…"
                             return (
                                 None,
-                                f"Invalid {p_name}: {value}. ID is out of "
+                                f"Invalid {p_name}: {shown}. ID is out of "
                                 "the valid integer range.",
                             )
                         return value, None
