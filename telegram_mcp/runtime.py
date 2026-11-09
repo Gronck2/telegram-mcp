@@ -2877,6 +2877,24 @@ async def _resolve_with_retries(
     ) from last_error
 
 
+def _digit_string_to_id(identifier: Union[int, str]) -> Union[int, str]:
+    """A digit string is an id (README), with or without an allowlist.
+
+    Left as a string Telethon would read it as a phone and, on a miss, reach the
+    display-name column or the contacts' phone numbers. A value Telethon cannot pack
+    (outside int64, or beyond int()'s 4300 digits) is refused here.
+    """
+    if not (isinstance(identifier, str) and _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip())):
+        return identifier
+    try:
+        value = int(identifier.strip())
+    except ValueError:
+        value = None
+    if value is None or not (-(2**63) <= value <= 2**63 - 1):
+        raise ValueError("The id is out of the valid id range.")
+    return value
+
+
 async def _resolve(getter: str, identifier: Union[int, str], client, label: str) -> Any:
     """Resolve an identifier, turning a failed free-text reference into a question.
 
@@ -2897,11 +2915,7 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
                     f"{identifier!r} is not a username or an id; chat access is restricted "
                     "by an allowlist, so display names cannot be used."
                 )
-        if isinstance(identifier, str) and _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip()):
-            # A digit string is an id (README), with or without an allowlist. Left as a
-            # string Telethon would read it as a phone and, on a miss, reach the
-            # display-name column or the contacts' phone numbers.
-            identifier = int(identifier.strip())
+        identifier = _digit_string_to_id(identifier)
         return await _resolve_with_retries(
             getter, identifier, client, label, try_marked=not from_alias
         )
