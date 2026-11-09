@@ -34,7 +34,10 @@ Keep this file up to date when a change alters it.
    comes from `readOnlyHint` (see `chat_access_for_tool`), except
    `READ_ACCESS_TOOLS` (read) and `BOTH_ACCESS_TOOLS` (`press_inline_button`,
    `vote_poll`: read and write). A non-blank value with no valid entry denies
-   all; `@*` is not the wildcard. While a list is set, invite joins resolve the
+   all; `@*` is not the wildcard. Entries that are not numeric ids, `*`,
+   usernames or phone numbers (free text, invite links, malformed handles)
+   are parsed to an inert entry that matches nothing, with a stderr warning at
+   startup (`_parse_chat_id_token`, task 0005). While a list is set, invite joins resolve the
    invite first and need write access to its chat (plain invites are refused).
    Tools that name a user rather than a chat are covered by peer helpers in
    `runtime.py` (ADR 0002): `validate_id(..., peer_subject=True)` /
