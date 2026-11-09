@@ -281,6 +281,29 @@ def test_get_history_decorators_applied_once():
     assert tail.count('@validate_id("chat_id")') == 1
 
 
+@pytest.mark.asyncio
+async def test_registered_get_history_is_single_wrapped_and_listed_with_new_params():
+    from mcp.types import ListToolsRequest
+
+    fn = runtime.mcp._tool_manager.get_tool("get_history").fn
+    chain = []
+    while hasattr(fn, "__wrapped__"):
+        chain.append(fn)
+        fn = fn.__wrapped__
+    assert fn.__qualname__ == "get_history"
+    assert len(chain) == len({id(f) for f in chain})
+    # with_account + validate_id once each: no wrapper layer repeats the same code object
+    codes = [getattr(f, "__code__", None) for f in chain]
+    assert len(codes) == len(set(codes))
+
+    handler = runtime.mcp._mcp_server.request_handlers[ListToolsRequest]
+    listed = (await handler(ListToolsRequest(method="tools/list"))).root.tools
+    matches = [t for t in listed if t.name == "get_history"]
+    assert len(matches) == 1
+    props = matches[0].inputSchema["properties"]
+    assert {"min_id", "offset_id", "since_date"} <= set(props)
+
+
 # --- 4. structured errors ---------------------------------------------------------------
 
 
