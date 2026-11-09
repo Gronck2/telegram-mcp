@@ -117,7 +117,7 @@ async def test_phone_without_row_goes_to_contacts_not_names(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resolver", RESOLVERS)
-async def test_no_allowlist_numeric_string_not_converted(monkeypatch, resolver):
+async def test_no_allowlist_numeric_string_becomes_int(monkeypatch, resolver):
     seen = []
 
     class Client:
@@ -129,8 +129,10 @@ async def test_no_allowlist_numeric_string_not_converted(monkeypatch, resolver):
             seen.append(x)
             return types.InputPeerSelf()
 
+    # Task 0006 round 3: digit strings are ids in every mode; as strings Telethon
+    # would read them as phones (name column / GetContacts).
     await getattr(runtime, resolver)("12345678", Client())
-    assert seen == ["12345678"]
+    assert seen == [12345678]
 
 
 @pytest.mark.asyncio

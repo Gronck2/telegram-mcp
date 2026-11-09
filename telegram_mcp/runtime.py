@@ -2800,7 +2800,8 @@ def _phone_routed(client, getter: str):
             and utils.parse_phone(identifier)
             and not _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip())
         ):
-            # bare digit strings are ids, not phones; they stay with Telethon
+            # digit-only strings never get here from the resolvers (converted to int
+            # in _resolve); direct callers keep Telethon's own handling of them
             return await _phone_lookup(client, identifier, as_entity)
         return await raw(identifier)
 
@@ -2896,10 +2897,11 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
                     f"{identifier!r} is not a username or an id; chat access is restricted "
                     "by an allowlist, so display names cannot be used."
                 )
-            if _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip()):
-                # The allowlist matched this string as an integer id; resolving it as a
-                # phone would reach the display-name column on a miss.
-                identifier = int(identifier.strip())
+        if isinstance(identifier, str) and _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip()):
+            # A digit string is an id (README), with or without an allowlist. Left as a
+            # string Telethon would read it as a phone and, on a miss, reach the
+            # display-name column or the contacts' phone numbers.
+            identifier = int(identifier.strip())
         return await _resolve_with_retries(
             getter, identifier, client, label, try_marked=not from_alias
         )

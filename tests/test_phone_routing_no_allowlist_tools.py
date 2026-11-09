@@ -1,7 +1,7 @@
 """Phone strings through real tools WITHOUT an allowlist (task 0006, round 2 tester pass).
 
 A phone is answered by the phone cache or the contacts list, never by a chat title; bare
-digit strings, usernames, aliases and 'me' keep their old Telethon path (no GetContacts).
+digit strings are ids (int); usernames, aliases and 'me' keep their old Telethon path.
 """
 
 from types import SimpleNamespace
@@ -73,6 +73,8 @@ def make_client(title=None, contact=None):
                 for i in request.id
                 if getattr(i, "user_id", 777) in known
             ]
+        if isinstance(request, functions.messages.GetChatsRequest):
+            return types.messages.Chats(chats=[])
         if isinstance(request, functions.messages.GetMessagesRequest):
             return types.messages.Messages(messages=[], chats=[], users=[])
         if isinstance(request, functions.channels.GetParticipantsRequest):
@@ -204,9 +206,9 @@ async def test_phone_in_phone_cache_wins_without_contacts_call(monkeypatch, spel
 @pytest.mark.asyncio
 @pytest.mark.parametrize("getter", ["get_entity", "get_input_entity"])
 @pytest.mark.parametrize("ref", ["101", "12345678", "-100123", " 101 "])
-async def test_bare_digit_strings_keep_telethon_calls(getter, ref):
-    # Telethon itself may ask GetContacts for a digit string; the point is that the
-    # resolver adds nothing before it: the raw call sequence is a prefix of ours.
+async def test_bare_digit_strings_resolve_like_ints(getter, ref):
+    # Task 0006 round 3: digit strings are converted to ints before Telethon, so the
+    # call sequence equals the one for the int and never touches the impostor title.
     routed, raw = make_client(title=ref.strip()), make_client(title=ref.strip())
     resolver = {
         "get_entity": runtime.resolve_entity,
@@ -214,11 +216,11 @@ async def test_bare_digit_strings_keep_telethon_calls(getter, ref):
     }
     try:
         await resolver[getter](ref, routed)
-    except ValueError:
+    except (ValueError, KeyError):
         pass
     try:
-        await getattr(raw, getter)(ref)
-    except ValueError:
+        await getattr(raw, getter)(int(ref.strip()))
+    except (ValueError, KeyError):
         pass
     ours = [type(r) for r in routed.requests]
     theirs = [type(r) for r in raw.requests]
