@@ -1227,7 +1227,8 @@ def _warn_ignored_entry(token: str, source: str) -> None:
 def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional[Union[int, str]]:
     """Parse one allowlist token into an ID, username, wildcard or inert sentinel.
 
-    Accepted: numeric marked ids, phone numbers (kept as before: Telethon looks them up by phone), ``*`` and usernames (``name``, ``@name``, any case,
+    Accepted: numeric marked ids, phone numbers (kept as before: Telethon looks
+    them up by phone), ``*`` and usernames (``name``, ``@name``, any case,
     ``t.me/name`` forms; stored as the lower-cased username that Telethon's
     ``parse_username`` extracts). Anything else (free text, invite links, malformed
     handles such as ``1abcd/``) becomes the inert sentinel with a warning: a string
