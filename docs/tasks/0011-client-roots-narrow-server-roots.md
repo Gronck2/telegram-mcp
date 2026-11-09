@@ -273,3 +273,16 @@ roots stop being authoritative when the operator configures server roots).
 Per the contract an ADR is created by the main thread, not by this step:
 suggest an ADR "Server roots are the ceiling for client MCP Roots", written
 after the owner confirms the decisions above.
+
+## Round 3 (coordinator, 2026-11-10)
+
+Two findings fixed on the owner's behalf:
+
+1. README "Shared server" `docker run` and `examples/docker/docker-compose.shared.yml`
+   served unauthenticated HTTP without a server root; both now set
+   `TELEGRAM_ALLOWED_ROOTS` (default `/app/data/files`), named volumes for files
+   and state, read-only root, tmpfs `/tmp`, dropped capabilities and
+   no-new-privileges. `tests/test_deploy_hardening.py` checks them statically.
+2. `_add_default_file_session` warning text is now the constant "Skipping the
+   optional default file session: its session file is not writable or locked"
+   (the except clause is unchanged).

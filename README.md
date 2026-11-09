@@ -991,9 +991,21 @@ docker run -d --name telegram-mcp --restart unless-stopped \
   --env-file .env \
   -e MCP_TRANSPORT=http \
   -e MCP_HOST=0.0.0.0 \
+  -e TELEGRAM_ALLOWED_ROOTS=/app/data/files \
+  -e TELEGRAM_AUDIT_LOG=/home/appuser/.local/state/telegram-mcp/audit.log \
+  -v telegram_files:/app/data/files \
+  -v telegram_state:/home/appuser/.local/state \
+  -v "$PWD/transcript_cache:/app/data/transcripts" \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges:true \
   -p 127.0.0.1:8765:8765 \
   telegram-mcp:latest
 ```
+
+`TELEGRAM_ALLOWED_ROOTS` sets the server root that is the ceiling for client
+MCP Roots (a client can only narrow it; see
+`docs/adr/0004-server-roots-ceiling-for-client-roots.md`). Without it the
+unauthenticated endpoint would trust whatever roots a client announces.
 
 `MCP_HOST=0.0.0.0` binds inside the container so the published port works;
 `-p 127.0.0.1:8765:8765` keeps the server reachable only from the local

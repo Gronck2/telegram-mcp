@@ -948,7 +948,8 @@ def _add_default_file_session(accounts: dict[str, TelegramClient], session_name:
             raise
         # Constant message: no paths or names from the environment in logs.
         logging.getLogger("telegram_mcp").warning(
-            "Skipping the optional default file session: its session file is not writable"
+            "Skipping the optional default file session: "
+            "its session file is not writable or locked"
         )
     else:
         if optional_default:

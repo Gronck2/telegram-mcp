@@ -137,3 +137,39 @@ def test_runtime_sys_path_has_no_writable_state_or_data_directory():
             offenders.append(str(path.relative_to(source)))
     assert offenders == []
     assert not any("data" in Path(p).parts[-1:] for p in sys.path if p)
+
+
+def test_shared_example_compose_has_server_root_and_hardening():
+    yaml = pytest.importorskip("yaml")
+    path = ROOT / "examples" / "docker" / "docker-compose.shared.yml"
+    if not path.exists():
+        pytest.skip("shared compose example is absent")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    service = data["services"]["telegram-mcp"]
+    env = service["environment"]
+    assert env["TELEGRAM_ALLOWED_ROOTS"] == "${TELEGRAM_ALLOWED_ROOTS:-/app/data/files}"
+    assert env["TELEGRAM_AUDIT_LOG"].startswith("/home/appuser/.local/state/")
+    assert service["read_only"] is True
+    assert "/tmp" in service["tmpfs"]
+    assert service["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in service["security_opt"]
+    assert service["ports"] == ["127.0.0.1:8765:8765"]
+    volumes = service["volumes"]
+    assert "telegram_state:/home/appuser/.local/state" in volumes
+    assert "telegram_files:/app/data/files" in volumes
+    assert {"telegram_state", "telegram_files"} <= set(data["volumes"])
+    assert not any(str(v).split(":")[1:2] == ["/app"] for v in volumes)
+
+
+def test_readme_shared_docker_run_sets_server_root():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    block = text.split("### Shared server (recommended)")[1].split("```bash")[1].split("```")[0]
+    for needed in (
+        "TELEGRAM_ALLOWED_ROOTS=/app/data/files",
+        "telegram_files:/app/data/files",
+        "telegram_state:/home/appuser/.local/state",
+        "--read-only",
+        "--tmpfs /tmp",
+        "127.0.0.1:8765:8765",
+    ):
+        assert needed in block, needed
