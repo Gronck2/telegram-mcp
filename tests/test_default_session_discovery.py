@@ -86,7 +86,11 @@ def test_locked_default_session_file_is_skipped_with_warning(discovery, tmp_path
         holder.close()
 
     assert set(accounts) == {"work"}
-    assert any("optional default file session" in r.getMessage() for r in caplog.records)
+    assert any(
+        "Skipping the optional default file session: its session file is not writable or locked"
+        in r.getMessage()
+        for r in caplog.records
+    )
     assert str(tmp_path) not in caplog.text
 
 

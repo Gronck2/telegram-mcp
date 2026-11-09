@@ -661,7 +661,11 @@ def test_unwritable_default_session_dir_is_skipped_next_to_labelled_accounts(mon
 
     assert set(accounts) == {"work"}
     assert runtime_module.OPTIONAL_ACCOUNTS == set()
-    assert any("optional default file session" in r.getMessage() for r in caplog.records)
+    assert any(
+        "Skipping the optional default file session: its session file is not writable or locked"
+        in r.getMessage()
+        for r in caplog.records
+    )
     assert "/secret" not in caplog.text
 
 
