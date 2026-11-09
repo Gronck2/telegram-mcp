@@ -25,6 +25,11 @@ def _clear_expected_username(monkeypatch):
             monkeypatch.delenv(key, raising=False)
 
 
+# Every blocked address of the running test. Production code swallows the guard's
+# RuntimeError (broad ``except Exception``), so teardown fails the test instead.
+_BLOCKED_CONNECTS: list = []
+
+
 def _assert_loopback(address):
     """Raise unless ``address`` (host, port, ...) names a loopback host."""
     import ipaddress
@@ -38,6 +43,7 @@ def _assert_loopback(address):
     except ValueError:
         if host in ("localhost", "testserver"):
             return
+    _BLOCKED_CONNECTS.append(address)
     raise RuntimeError(f"Test attempted a real network connection to {address!r}")
 
 
@@ -50,6 +56,8 @@ def _no_real_network(monkeypatch):
     """
     import socket
 
+    _BLOCKED_CONNECTS.clear()
+
     def guarded(real):
         def wrapper(self, address):
             if self.family != getattr(socket, "AF_UNIX", None):
@@ -60,3 +68,8 @@ def _no_real_network(monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", guarded(socket.socket.connect))
     monkeypatch.setattr(socket.socket, "connect_ex", guarded(socket.socket.connect_ex))
+    yield _BLOCKED_CONNECTS
+    blocked = list(_BLOCKED_CONNECTS)
+    _BLOCKED_CONNECTS.clear()
+    if blocked:
+        pytest.fail(f"Test tried real network connects (blocked, but swallowed?): {blocked!r}")

@@ -118,7 +118,10 @@ async def test_create_folder_never_uses_same_titled_chat(monkeypatch, entry):
         await folders.create_folder("work", chat_ids=[entry])
     except Exception:
         pass
-    assert f"'channel_id': {IMPOSTOR_ID}" not in "\n".join(sent)
+    # The allowlist check may look the name up (GetChannels, read-only) before it
+    # denies the impostor by id; no other request may ever name the impostor.
+    acting = [r for r in sent if "GetChannelsRequest" not in r]
+    assert f"'channel_id': {IMPOSTOR_ID}" not in "\n".join(acting)
     assert client.requests == []
 
 
@@ -132,5 +135,8 @@ async def test_forward_send_as_never_uses_same_titled_chat(monkeypatch, entry):
         await messages.forward_message(5, 5, 5, send_as=entry)
     except Exception:
         pass
-    assert f"'channel_id': {IMPOSTOR_ID}" not in "\n".join(sent)
+    # The allowlist check may look the name up (GetChannels, read-only) before it
+    # denies the impostor by id; no other request may ever name the impostor.
+    acting = [r for r in sent if "GetChannelsRequest" not in r]
+    assert f"'channel_id': {IMPOSTOR_ID}" not in "\n".join(acting)
     assert client.requests == []

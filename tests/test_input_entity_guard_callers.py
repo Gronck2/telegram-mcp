@@ -42,6 +42,8 @@ def harness(monkeypatch, module, client):
         return None
 
     monkeypatch.setattr(module, "ensure_connected", connected)
+    monkeypatch.setattr(runtime, "get_client", lambda account=None: client)
+    monkeypatch.setattr(runtime, "ensure_connected", connected)
     resolve = client._call
     sent = []
 
