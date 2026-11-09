@@ -6,7 +6,7 @@ Base: `ours` at e9d85e0 (includes task 0010).
 
 ## Approach
 
-Call-site hardening in `telegram_mcp/tools/events.py`, no change to
+Defensive call-site change in `telegram_mcp/tools/events.py`, no change to
 `apply_alias`. Add a tiny private helper:
 
 ```python

@@ -86,7 +86,7 @@ Verified against `ours` at e9d85e0 (2026-11-10).
 
 None. Note for the owner: the finding is already neutralised on the handler
 path by 0010 plus the `validate_id` substitution; this task is a defensive
-hardening plus regression tests, small by design. If the owner prefers no code
+change plus regression tests, small by design. If the owner prefers no code
 change, the tests alone (plan step 1) still pin the invariant; the coordinator
 already approved doing the task, so the plan keeps the small call-site wrap.
 
