@@ -3025,9 +3025,6 @@ async def _fetch_history_page(cl, entity, limit, offset_id, min_id, since, tid):
 @mcp.tool(annotations=ToolAnnotations(title="Get History", openWorldHint=True, readOnlyHint=True))
 @with_account(readonly=True)
 @validate_id("chat_id")
-@mcp.tool(annotations=ToolAnnotations(title="Get History", openWorldHint=True, readOnlyHint=True))
-@with_account(readonly=True)
-@validate_id("chat_id")
 async def get_history(
     chat_id: Union[int, str],
     limit: int = 100,
