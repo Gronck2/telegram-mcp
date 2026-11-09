@@ -126,3 +126,68 @@ async def test_inert_entry_caller_string_is_denied_before_resolution(monkeypatch
     assert not runtime.is_chat_allowed(IMPOSTOR_ID)
     assert not runtime.is_chat_allowed(-1000000000000 - IMPOSTOR_ID)
     assert client.requests == []
+
+
+# --- phone entries without "+" and "@"-prefixed look-alikes (code review round 1) ---
+
+LOCAL_PHONES = ["555-123-4567", "8 (999) 123-45-67"]
+
+
+@pytest.mark.parametrize("entry", LOCAL_PHONES + ["+7 999 123 45 67"])
+def test_phone_entry_is_canonical_digits(monkeypatch, entry):
+    digits = "".join(c for c in entry if c.isdigit())
+    assert runtime._parse_allowed_chat_ids(entry) == {"+" + digits}
+    allow(monkeypatch, entry)
+    assert runtime.is_chat_allowed(entry)
+    assert runtime.is_chat_allowed("+" + digits)
+
+
+@pytest.mark.parametrize("entry", LOCAL_PHONES)
+def test_at_prefixed_phone_lookalike_is_denied_and_malformed(monkeypatch, entry):
+    allow(monkeypatch, entry)
+    for caller in ("@" + entry, "@+" + entry, "@ " + entry):
+        assert not runtime.is_chat_allowed(caller), caller
+        assert runtime._is_malformed_handle(caller), caller
+    assert not runtime._is_malformed_handle(entry)
+
+
+def test_phone_caller_variants_match_consistently(monkeypatch):
+    allow(monkeypatch, "+79991234567")
+    for caller in ("+7 999 123 45 67", "+7(999)123-45-67", " +79991234567 "):
+        assert runtime.is_chat_allowed(caller), caller
+        assert not runtime._is_malformed_handle(caller), caller
+    for caller in ("8 (999) 123-45-67", "@+79991234567", "+79991234568"):
+        assert not runtime.is_chat_allowed(caller), caller
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", LOCAL_PHONES)
+@pytest.mark.parametrize("resolver", ["resolve_entity", "resolve_input_entity"])
+async def test_at_phone_lookalike_never_reaches_name_column(monkeypatch, entry, resolver):
+    allow(monkeypatch, entry)
+    caller = "@" + entry
+    assert not runtime.is_chat_allowed(caller)
+    client = make_client(title=caller)
+    try:
+        result = await getattr(runtime, resolver)(caller, client)
+    except Exception:
+        result = None
+    assert getattr(result, "id", None) != IMPOSTOR_ID
+    assert getattr(result, "channel_id", None) != IMPOSTOR_ID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", LOCAL_PHONES)
+async def test_create_folder_at_phone_lookalike(monkeypatch, entry):
+    from telegram_mcp.tools import folders
+    from test_input_entity_guard_callers import harness
+
+    allow(monkeypatch, entry)
+    client = make_client(title="@" + entry)
+    sent = harness(monkeypatch, folders, client)
+    try:
+        await folders.create_folder("work", chat_ids=["@" + entry])
+    except Exception:
+        pass
+    assert f"'channel_id': {IMPOSTOR_ID}" not in "\n".join(sent)
+    assert client.requests == []
