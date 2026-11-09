@@ -33,7 +33,10 @@ CHILDREN: dict = {}
 
 @pytest.fixture
 def probe(monkeypatch):
-    """Read-only fan-out tool; ``spec`` says what each account does: ``label=delay:action:text``."""
+    """Read-only fan-out tool.
+
+    ``spec`` says what each account does: ``label=delay:action:text``.
+    """
     monkeypatch.delenv("TELEGRAM_STRUCTURED_ERRORS", raising=False)
     monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", str(TIMEOUT))
     monkeypatch.setattr(runtime, "clients", {"a": object(), "b": object()})
