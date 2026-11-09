@@ -3125,9 +3125,11 @@ async def _resolve_with_retries(
             except ValueError as error:
                 last_error = error
 
+    tried = (
+        f", including marked variants {_marked_id_candidates(identifier)}" if try_marked else ""
+    )
     raise EntityNotFoundError(
-        f"Could not resolve {label} for {identifier!r}, "
-        f"including marked variants {_marked_id_candidates(identifier)}"
+        f"Could not resolve {label} for {identifier!r}{tried}"
     ) from last_error
 
 
@@ -3161,8 +3163,9 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
         client = get_client()
     try:
         # An id that came from a saved alias is exact; guessing marked variants of
-        # it could deliver to a completely unrelated chat.
-        from_alias = identifier is not original
+        # it could deliver to a completely unrelated chat. That covers a string alias
+        # resolved just above and an AliasID that @validate_id already resolved.
+        from_alias = identifier is not original or isinstance(identifier, AliasID)
         if is_chat_allowlist_enabled() and isinstance(identifier, str):
             if _is_malformed_handle(identifier):
                 raise InvalidReferenceError(
