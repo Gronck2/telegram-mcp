@@ -1362,9 +1362,11 @@ def _identifier_matches_allowlist(allowed: set[Union[int, str]], chat_identifier
         return int(ident) in allowed
     phone = utils.parse_phone(ident)
     if phone:
-        # Only a string Telethon itself reads as a phone (no "@" stripping, so
-        # "@555-123-4567" is not one) may match a phone entry.
-        return "+" + phone in allowed
+        # Only a "+"-led string Telethon itself reads as a phone (no "@" stripping,
+        # so "@555-123-4567" is not one) may match a phone entry. Forms without "+"
+        # ("555 123 4567") are not is_handle_like, so a saved alias can shadow them
+        # in apply_alias and they must not grant the phone entry's access.
+        return ident.startswith("+") and "+" + phone in allowed
     clean = ident.lstrip("@").strip().lower()
     return bool(clean) and not clean.startswith("+") and clean in allowed
 

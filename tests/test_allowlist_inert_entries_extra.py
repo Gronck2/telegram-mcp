@@ -138,8 +138,9 @@ def test_phone_entry_is_canonical_digits(monkeypatch, entry):
     digits = "".join(c for c in entry if c.isdigit())
     assert runtime._parse_allowed_chat_ids(entry) == {"+" + digits}
     allow(monkeypatch, entry)
-    assert runtime.is_chat_allowed(entry)
     assert runtime.is_chat_allowed("+" + digits)
+    # Only "+"-led callers match: a bare form could be shadowed by a saved alias.
+    assert runtime.is_chat_allowed(entry) == entry.startswith("+")
 
 
 @pytest.mark.parametrize("entry", LOCAL_PHONES)

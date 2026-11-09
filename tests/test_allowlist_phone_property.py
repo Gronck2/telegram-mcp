@@ -13,7 +13,7 @@ from telethon import functions, types, utils
 
 from telegram_mcp import runtime
 from test_allowlist_inert_entries_extra import _phone_client
-from test_input_entity_guard import IMPOSTOR_ID, _clean, allow  # noqa: F401
+from test_input_entity_guard import IMPOSTOR_ID, _clean, allow, make_client  # noqa: F401
 
 RESOLVERS = ("resolve_entity", "resolve_input_entity")
 ENTRIES = ["555-123-4567", "8 (999) 123-45-67", "+7 999 123-45-67", "79991234567"]
@@ -136,3 +136,32 @@ def test_secondary_usernames_still_match_active_only(monkeypatch):
     assert runtime.is_chat_allowed(5, entity=active)
     assert not runtime.is_chat_allowed(6, entity=inactive)
     assert not runtime.is_chat_allowed(7, entity=types.User(id=7))
+
+
+@pytest.mark.asyncio
+async def test_alias_shadowing_a_bare_phone_form_cannot_reach_a_write_phone_entry(
+    monkeypatch, tmp_path
+):
+    """Alias "1 555 123 4567" -> read-only chat Y must not pass the write phone entry."""
+    from telegram_mcp.tools import messages
+    from test_input_entity_guard_callers import harness
+
+    y = 9001
+    monkeypatch.setenv("TELEGRAM_ALIASES_FILE", str(tmp_path / "aliases.json"))
+    runtime.save_aliases({"1 555 123 4567": y})
+    monkeypatch.setenv("TELEGRAM_ALLOWED_READ_CHATS", "5, %d" % y)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_WRITE_CHATS", "5, +1 555 123 4567")
+    assert runtime.apply_alias("1 555 123 4567") == y
+    assert not runtime.is_chat_allowed("1 555 123 4567", access="write")
+    assert not runtime.is_chat_allowed("1 (555) 123-4567", access="write")
+    assert runtime.is_chat_allowed("+1 555 123 4567", access="write")
+    assert runtime.is_chat_allowed("+15551234567", access="write")
+
+    client = make_client(title="x")
+    sent = harness(monkeypatch, messages, client)
+    try:
+        res = await messages.forward_message(5, 5, 5, send_as="1 555 123 4567")
+    except Exception as e:
+        res = str(e)
+    assert client.requests == []
+    assert "ForwardMessages" not in "\n".join(sent) + str(res)
