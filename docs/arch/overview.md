@@ -54,6 +54,18 @@ Keep this file up to date when a change alters it.
    Member `user_id` parameters of group-admin tools are deliberately not
    checked. `tests/test_peer_allowlist.py` fails on a registered tool with a
    peer-naming parameter that is not classified.
+   Resolver guard (task 0004): while a list is set, `resolve_input_entity`
+   resolves a username that is not in the session cache through
+   `ResolveUsernameRequest` instead of Telethon's `get_input_entity`, which would
+   answer from a cached chat title/display name; `_resolve` refuses handle-shaped
+   strings that are no valid username (`abcde_`); `get_participants`,
+   `get_recent_actions` and `send_typing` use the guarded or already checked peer.
+   Invariant: `resolve_input_entity(s)` names the same peer as `resolve_entity(s)`;
+   the cache answers directly only for own-account refs and username/phone row hits,
+   everything else (invites, links, misses) goes through `get_entity`. Numeric id
+   strings become ints (never a phone/name lookup); `@ name` and `tg://` forms are
+   refused like other malformed handles.
+   Without a list nothing changes.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.
 4. **HTTP transport security** — Host/Origin validation always on

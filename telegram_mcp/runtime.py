@@ -2532,6 +2532,113 @@ def alias_failure(original: Any, identifier: Any) -> Optional[AliasNeedsUser]:
     )
 
 
+def _is_self_ref(identifier: Any) -> bool:
+    """True for the strings ``get_entity`` treats as the own account (any case, no strip)."""
+    return isinstance(identifier, str) and identifier.lower() in _SELF_REFS
+
+
+def _parses_as_username(identifier: Any) -> bool:
+    """True if Telethon would look this string up as a username (name, link or ``@name``).
+
+    The rule ``_username_cached`` uses: independent of ``is_handle_like``, so ``t.me``
+    links and 3-4 character handles count. Self references are excluded.
+    """
+    if not isinstance(identifier, str) or _is_self_ref(identifier):
+        return False
+    name, is_invite = utils.parse_username(identifier)
+    return bool(name) and not is_invite
+
+
+def _is_malformed_handle(identifier: Any) -> bool:
+    """True for a handle-shaped string that only a cached display name could answer.
+
+    ``abcde_``, ``1abcde``, ``ab__cde``, names over 32 characters, ``@``-prefixed ids,
+    ``@ name`` and unknown links such as ``tg://resolve?domain=name`` are no usernames,
+    yet the allowlist would accept them by string (``@`` and spaces are stripped) while
+    only the display-name column could answer. Self references, phones, ids and invite
+    links are not usernames either, but Telethon answers them without the name column,
+    so they are exempt. Plain free text (``My Group``) cannot match an allowlist entry
+    by string and is left to the id check on the resolved entity.
+    """
+    if not isinstance(identifier, str):
+        return False
+    if _is_self_ref(identifier) or utils.parse_phone(identifier):
+        return False
+    if _parses_as_username(identifier) or utils.parse_username(identifier)[1]:
+        return False
+    # Same normalisation as _matches_chat_allowlist: whatever it would grant by string
+    # because the cleaned form is a username must reach Telegram as that username.
+    cleaned = identifier.strip().lstrip("@").strip().lower()
+    cleaned_name, cleaned_invite = utils.parse_username(cleaned) if cleaned else (None, False)
+    return (
+        bool(cleaned_name and not cleaned_invite)
+        or is_handle_like(identifier)
+        or is_handle_like(cleaned)
+        or "://" in identifier
+    )
+
+
+def _phone_cached(client, identifier: str) -> bool:
+    """True if the session cache holds this phone (a phone-row hit never reads names)."""
+    try:
+        phone = utils.parse_phone(identifier)
+        return bool(phone) and bool(client.session.get_entity_rows_by_phone(phone))
+    except Exception:
+        return False
+
+
+def _username_cached(client, identifier: str) -> bool:
+    """True if the session cache holds this exact username (primary usernames only).
+
+    Any failure counts as a miss, which sends the lookup to the network, never to the
+    display-name column.
+    """
+    try:
+        name, is_invite = utils.parse_username(identifier)
+        if not name or is_invite:
+            return False
+        return bool(client.session.get_entity_rows_by_username(name))
+    except Exception:
+        return False
+
+
+def _guarded_input_getter(client):
+    """get_input_entity that always names the same peer as ``get_entity`` would.
+
+    Telethon's session falls back to the cached display name / title of every chat
+    when a username, phone or invite row misses, while ``get_entity`` asks Telegram.
+    The cache answers directly only where it is provably the same peer: own account,
+    a username-row hit for a parsed username, a phone-row hit for a phone. Everything
+    else (a miss, invite links, other links) goes through ``get_entity``. Numeric id
+    strings never get here: ``_resolve`` turns them into ints first.
+    """
+
+    async def get(identifier):
+        if _is_self_ref(identifier):
+            # get_input_entity short-circuits only the exact lowercase strings; any other
+            # case would be looked up by display name, while resolve_entity answers self.
+            return types.InputPeerSelf()
+        if isinstance(identifier, str):
+            if utils.parse_phone(identifier):
+                cached = _phone_cached(client, identifier)
+            elif _parses_as_username(identifier):
+                cached = _username_cached(client, identifier)
+            else:
+                cached = False
+            if not cached:
+                return utils.get_input_peer(await client.get_entity(identifier))
+        return await client.get_input_entity(identifier)
+
+    return get
+
+
+def _lookup_callable(client, getter: str):
+    """The client's lookup method; under an allowlist the username-safe input lookup."""
+    if getter == "get_input_entity" and is_chat_allowlist_enabled():
+        return _guarded_input_getter(client)
+    return getattr(client, getter)
+
+
 async def _resolve_with_retries(
     getter: str, identifier: Union[int, str], client, label: str, try_marked: bool = True
 ):
@@ -2542,7 +2649,7 @@ async def _resolve_with_retries(
     Telethon's marked chat/channel variants.
     """
     await ensure_connected(client)
-    get = getattr(client, getter)
+    get = _lookup_callable(client, getter)
     last_error = None
     try:
         try:
@@ -2599,6 +2706,16 @@ async def _resolve(getter: str, identifier: Union[int, str], client, label: str)
         # An id that came from a saved alias is exact; guessing marked variants of
         # it could deliver to a completely unrelated chat.
         from_alias = identifier is not original
+        if is_chat_allowlist_enabled() and isinstance(identifier, str):
+            if _is_malformed_handle(identifier):
+                raise ValueError(
+                    f"{identifier!r} is not a username or an id; chat access is restricted "
+                    "by an allowlist, so display names cannot be used."
+                )
+            if _NUMERIC_CHAT_ID_RE.fullmatch(identifier.strip()):
+                # The allowlist matched this string as an integer id; resolving it as a
+                # phone would reach the display-name column on a miss.
+                identifier = int(identifier.strip())
         return await _resolve_with_retries(
             getter, identifier, client, label, try_marked=not from_alias
         )

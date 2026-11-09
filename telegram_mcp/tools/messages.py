@@ -2503,7 +2503,12 @@ async def send_typing(
                 chat_id=chat_id,
             )
 
-        peer = await resolve_input_entity(chat_id, cl)
+        # Under an allowlist, act on the entity that was just checked, not on a second lookup.
+        peer = (
+            utils.get_input_peer(entity)
+            if is_chat_allowlist_enabled()
+            else await resolve_input_entity(chat_id, cl)
+        )
         typing = functions.messages.SetTypingRequest(
             peer=peer, action=types.SendMessageTypingAction(), top_msg_id=topic_id
         )
