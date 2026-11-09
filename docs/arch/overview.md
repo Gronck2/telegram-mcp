@@ -95,7 +95,13 @@ Keep this file up to date when a change alters it.
    own lookup; digit strings (ints) and phone strings (`_phone_lookup`) are
    handled as described above.
 3. **File roots** — file tools are disabled until allowed roots come from the
-   client Roots API or server CLI arguments.
+   client Roots API or server roots (`TELEGRAM_ALLOWED_ROOTS` / CLI arguments).
+   Server roots are the ceiling: with any server root set, client roots only
+   narrow them (equal or under a server root kept; ancestors and symlink
+   escapes dropped), and an empty intersection is deny-all
+   (`ROOTS_STATUS_CLIENT_OUTSIDE_SERVER`) with no fallback. With no server
+   roots the client roots decide (ADR 0004). The container image is
+   root-owned and run read-only (`docker-compose.yml`).
 4. **HTTP transport security** — Host/Origin validation always on
    (localhost by default, `MCP_ALLOWED_HOSTS` / `MCP_ALLOWED_ORIGINS`); the
    Origin check wraps both the streamable HTTP and the SSE app (`/media/`,

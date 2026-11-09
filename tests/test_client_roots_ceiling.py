@@ -392,3 +392,17 @@ async def test_export_path_refused_for_ancestor_client_root(fake_app):
     assert path is None
     assert error == OUTSIDE_TEXT.format(tool="export_chat_history")
     assert fake_app.victim.read_text() == "ORIGINAL"
+
+
+def test_runner_warns_for_network_transport_without_server_roots(monkeypatch, capsys):
+    from telegram_mcp import runner
+
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [])
+    runner._warn_unrooted_network_transport("stdio")
+    assert capsys.readouterr().err == ""
+    runner._warn_unrooted_network_transport("http")
+    err = capsys.readouterr().err
+    assert err.startswith("WARNING:") and err.count("\n") == 1
+    monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [Path("/tmp")])
+    runner._warn_unrooted_network_transport("http")
+    assert capsys.readouterr().err == ""

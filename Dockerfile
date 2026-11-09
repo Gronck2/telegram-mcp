@@ -49,10 +49,14 @@ COPY --from=builder /install /usr/local
 COPY main.py sanitize.py ./
 COPY telegram_mcp ./telegram_mcp
 
-# Create non-root user and setup directories
+# Create non-root user and the writable data directories. /app itself (code and
+# any __pycache__) stays root-owned and read-only for appuser, so a file tool
+# can never overwrite code that runs on the next start. Only these directories
+# are owned by appuser; named volumes copy this ownership on first use.
 RUN adduser --disabled-password --gecos "" appuser && \
-    mkdir -p /app/data/transcripts && \
-    chown -R appuser:appuser /app
+    mkdir -p /app/data/transcripts /app/data/files \
+        /home/appuser/.local/state/telegram-mcp && \
+    chown -R appuser:appuser /app/data /home/appuser
 
 USER appuser
 

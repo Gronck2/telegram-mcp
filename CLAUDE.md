@@ -47,7 +47,7 @@ This is an MCP server that exposes Telegram operations as tools via [FastMCP](ht
 
 **Entity resolution:** `resolve_entity()` and `resolve_input_entity()` in `runtime.py` handle `StringSession`'s cold cache by calling `get_dialogs()` on miss, and also try Telethon-marked ID variants (`-1000000000000 - id` for channels, `-id` for basic groups) for bare positive integer IDs.
 
-**File-path security:** File tools (`send_file`, `download_media`, etc.) are disabled until allowed roots are configured. Roots come from MCP client Roots API (takes priority) or CLI positional arguments (`uv run main.py /allowed/path`). Empty client Roots are deny-all by default; set `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1` to fall back to server CLI roots instead.
+**File-path security:** File tools (`send_file`, `download_media`, etc.) are disabled until allowed roots are configured. Roots come from server roots (`TELEGRAM_ALLOWED_ROOTS` or CLI positional arguments, `uv run main.py /allowed/path`) and the MCP client Roots API; when server roots are set they are the ceiling and client roots can only narrow them (empty intersection is deny-all), otherwise client roots decide. Empty client Roots are deny-all by default; set `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1` to fall back to server CLI roots instead.
 
 **Transport:** Default is stdio. Set `MCP_TRANSPORT=sse` with optional `MCP_HOST` and `MCP_PORT` (default `127.0.0.1:8765`) to run as an SSE server instead — useful when sharing one Telethon session across multiple local MCP clients.
 
