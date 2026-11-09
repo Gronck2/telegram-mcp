@@ -131,6 +131,21 @@ the switch off nothing
 is recorded and results are byte-for-byte as before. Rationale and the plan to
 flip the default: `docs/adr/0003-structured-tool-errors.md`.
 
+## get_messages_by_ids
+
+Read-only batch fetch of one chat's messages by id (`message_ids`: a non-empty list of
+strict ints in 1..2^31-1, at most 100 distinct; the schema is `list[StrictInt]`, so string/bool/float items are rejected; FastMCP still decodes a JSON-string argument like `"[1,2]"` into a list before validation; duplicates are dropped keeping the first occurrence).
+Bad input is refused before any network call as `invalid_argument`. One
+`get_messages(entity, ids=[...])` call; Telethon's answer is paired with the request by
+message id, so a `None`, a `MessageEmpty` or an unrequested id never lands on the wrong
+id. Response: `{"results": [records], "missing_ids": [ints], "topics"?}`. Records are
+the `get_history` records (`message_to_dict`), in request order. `missing_ids` is always
+present (deleted, nonexistent or other-chat ids, in request order); all ids missing is a
+plain success with `results: []`, not `not_found`. No reply context (use
+`get_message_context`). Chat allowlists apply through the shared path: the tool is
+`readOnlyHint=True`, so it needs read access, like `get_history`. Under fan-out each
+account's block has its own `missing_ids`.
+
 ## get_history paging and the truncated flag
 
 `get_history` has an extra path taken only when `min_id`, `offset_id` or
