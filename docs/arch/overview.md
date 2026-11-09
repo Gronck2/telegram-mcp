@@ -60,6 +60,11 @@ Keep this file up to date when a change alters it.
    answer from a cached chat title/display name; `_resolve` refuses handle-shaped
    strings that are no valid username (`abcde_`); `get_participants`,
    `get_recent_actions` and `send_typing` use the guarded or already checked peer.
+   Invariant: `resolve_input_entity(s)` names the same peer as `resolve_entity(s)`;
+   the cache answers directly only for own-account refs and username/phone row hits,
+   everything else (invites, links, misses) goes through `get_entity`. Numeric id
+   strings become ints (never a phone/name lookup); `@ name` and `tg://` forms are
+   refused like other malformed handles.
    Without a list nothing changes.
 3. **File roots** — file tools are disabled until allowed roots come from the
    client Roots API or server CLI arguments.

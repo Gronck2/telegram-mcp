@@ -186,11 +186,6 @@ async def test_resolvers_agree_on_padded_and_cased_handles(monkeypatch, ref):
         "@ foobar",
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="task 0004 round 2: invite links, tg://resolve and '@ x' fall through to the "
-    "name column (guard keys on parse_username, which rejects them)",
-)
 async def test_invite_and_tg_links_never_reach_name_column(monkeypatch, ref):
     allow(monkeypatch, "foobar")
     client = make_client(title=ref)
