@@ -854,6 +854,7 @@ TELEGRAM_ALLOWED_WRITE_CHATS=-100999999999
 - Each tool's mode follows its MCP annotations: read-only tools (the ones `TELEGRAM_EXPOSED_TOOLS=read-only` keeps) need read access, every other tool needs write access. `download_media`, `export_chat_history` and `export_unread_messages` only read the chat (they write local files) and need read access. `forward_message` / `forward_messages` need read access to `from_chat_id` and write access to `to_chat_id`; `vote_poll` needs both.
 - Listings and incoming events (`list_chats`, `get_chats`, `search_global`, `get_drafts`, `wait_for_events`, the incoming feed) show readable chats only; a write-only chat is used by its ID.
 - Prefer numeric IDs over usernames: a username can be changed and later claimed by a different chat, an ID cannot.
+- An allowlisted `@username` matches a chat or user by its primary username or by any active secondary (collectible) username. Deactivated usernames never match. When Telegram does not report an entity's secondary usernames, only its ID and primary username can match (fail closed). A username given to a lookup tool (`add_contact`, `get_full_user`, `get_bot_info`, `resolve_username`) is accepted only if the resolved peer holds it as its primary or active secondary username, so it never grants more than those two rules. Local alias wording never matches by string. A released username can be taken by someone else, who then inherits the entry: prefer numeric IDs.
 
 ### What is enforced
 
@@ -866,7 +867,7 @@ When any chat allowlist is set:
 
 ### Contacts, lookups and acting on users
 
-A user is judged as their private chat: user `101` is allowed when `101` (or their `@username`, when the tool is given the username) is on the list for the needed mode.
+A user is judged as their private chat: user `101` is allowed when `101` (or one of their usernames, see the matching rules above) is on the list for the needed mode.
 
 - **Contact-book listings are refused while read access is restricted.** `list_contacts`, `search_contacts`, `export_contacts`, `get_contact_ids` and `get_blocked_users` return the privacy error and make no Telegram request when a chat allowlist is set and the effective read list has no `*`. With read access to every chat (`TELEGRAM_ALLOWED_READ_CHATS=*` or `TELEGRAM_ALLOWED_CHAT_IDS=*`) nothing is hidden, so they work even when the write list is narrow. `list_contact_aliases` lists only aliases whose contact is readable (matched by ID), without saying how many were left out.
 - **Lookups of one named peer show a public view outside read access.** `resolve_username`, `get_full_user`, `get_bot_info`, `resolve_phone` and the users named in `get_privacy_settings` return only: `id`, `type` (user, bot, group, channel), first/last name or title, username(s), a bot flag and badges (verified, scam, fake, premium). Phone, bio, photos, last seen, birthday, personal channel, common-chats count, contact flags and bot descriptions are never shown for such a peer; inside read access the output is unchanged. `resolve_phone` still spends its lookup quota. `get_user_photos` and `get_user_status` have nothing public to show and are refused outside read access.

@@ -1327,6 +1327,16 @@ def _matches_chat_allowlist(
         if username and str(username).lower() in allowed:
             return True
 
+        # Secondary / collectible usernames: only entries Telegram marks active
+        # (inactive ones are not resolvable and may be taken by someone else). An
+        # entity without ``usernames`` (min entities) simply does not match.
+        extra = getattr(entity, "usernames", None)
+        if isinstance(extra, (list, tuple)):
+            for item in extra:
+                name = getattr(item, "username", None)
+                if getattr(item, "active", None) is True and name and str(name).lower() in allowed:
+                    return True
+
     return False
 
 
@@ -1339,8 +1349,9 @@ def is_chat_allowed(
     events), "write" (sending, editing, administering) or "both".
 
     Integer identifiers are compared as marked IDs (see
-    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID and
-    username only. Its bare ``id`` is never used: the same number is a
+    ``_parse_allowed_chat_ids``); an entity is compared by its marked ID, its
+    username and its active secondary usernames (``entity.usernames``; ``active`` ones only, a
+    missing list never matches). Its bare ``id`` is never used: the same number is a
     different chat in the user, basic-group and channel namespaces.
 
     If no chat allowlist is configured, always returns True.
@@ -1399,12 +1410,57 @@ def check_chat_access(
     )
 
 
-def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
+def _is_username_identifier(identifier: Any) -> bool:
+    """True for a string Telethon resolves as a real @username.
+
+    Excludes ids, phones, "me"/"self" and alias wording. Strings that merely look
+    like a handle but that ``utils.parse_username`` rejects (``abcde_``, ``1abcde``,
+    ``ab__cde``, over 32 characters) are not usernames: Telethon would look them up
+    by display name in its cache instead of via ResolveUsernameRequest.
+    """
+    if not isinstance(identifier, str) or not is_handle_like(identifier):
+        return False
+    bare = identifier.strip().lstrip("@")
+    if bare.lstrip("-").isdigit() or bare.lower() in _SELF_REFS or "+" in identifier:
+        return False
+    name, is_invite = utils.parse_username(identifier)
+    return bool(name) and not is_invite
+
+
+def _entity_holds_username(entity: Any, identifier: str) -> bool:
+    """True if ``identifier`` is the primary username or a listed secondary one of ``entity``.
+
+    Defence in depth for the identifier grant: the resolved peer must itself carry the
+    string (guards against a display-name or stale-cache hit). Fails closed when a min
+    entity lacks the lists. Only active secondary usernames count (same rule as
+    ``_matches_chat_allowlist``); deactivated names never match.
+    """
+    wanted = identifier.strip().lstrip("@").lower()
+    names = [getattr(entity, "username", None)]
+    usernames = getattr(entity, "usernames", None)
+    if isinstance(usernames, (list, tuple)):
+        names += [
+            getattr(item, "username", None)
+            for item in usernames
+            if getattr(item, "active", None) is True
+        ]
+    return any(isinstance(name, str) and name.lower() == wanted for name in names)
+
+
+def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ, identifier: Any = None) -> bool:
     """True if ``entity`` (user, group or channel) is allowed for ``access``.
 
     A user is judged as their private chat (marked id = user id). With no chat
     allowlist configured this is always True. An entity whose id cannot be
     read is treated as not allowed.
+
+    ``identifier`` is the @username the caller gave and that resolved to
+    ``entity``; it must be the string ``entity`` was resolved from, and ``entity``
+    exactly the peer Telegram returned for it (never just the first raw element
+    of a result), since a matching string alone grants access. (A collectible or
+    secondary username is not in ``entity.username``.)
+    It is only compared when it looks like a real username, so alias wording
+    never matches the allowlist by string.
     """
     if not is_chat_allowlist_enabled():
         return True
@@ -1415,7 +1471,13 @@ def peer_allowed(entity: Any, access: str = CHAT_ACCESS_READ) -> bool:
         marked_id = get_marked_id(entity)
     except Exception:
         return False
-    return is_chat_allowed(marked_id, entity, access)
+    if is_chat_allowed(marked_id, entity, access):
+        return True
+    return (
+        _is_username_identifier(identifier)
+        and _entity_holds_username(entity, identifier)
+        and is_chat_allowed(identifier, entity, access)
+    )
 
 
 def read_access_restricted() -> bool:
@@ -1487,9 +1549,11 @@ def public_view(entity: Any) -> Dict[str, Any]:
     return view
 
 
-def view_for(entity: Any, full_builder) -> Any:
+def view_for(entity: Any, full_builder, identifier: Any = None) -> Any:
     """``full_builder()`` for a peer inside read access, else its public view."""
-    return full_builder() if peer_allowed(entity, CHAT_ACCESS_READ) else public_view(entity)
+    if peer_allowed(entity, CHAT_ACCESS_READ, identifier):
+        return full_builder()
+    return public_view(entity)
 
 
 def _is_self_reference(item: Any) -> bool:

@@ -42,6 +42,15 @@ Keep this file up to date when a change alters it.
    mode; contact-book listings are refused while read access is restricted
    (`refuse_if_read_restricted`, read list without `*`); lookups outside read
    access return `public_view` (id, type, name, usernames, bot flag, badges).
+   Username entries match the entity's primary username and its active
+   `usernames` entries (never inactive ones; without `usernames` only the id
+   and primary username can match). Lookup tools also pass the @username they
+   were given (`peer_allowed(..., identifier=)`); it is accepted only if
+   Telethon's `parse_username` takes it as a real handle (never alias wording)
+   and the resolved entity holds it as primary or active secondary username,
+   so it adds nothing beyond the entity match (defence in depth). A released
+   username can be claimed by someone else, so prefer numeric ids in the
+   allowlist.
    Member `user_id` parameters of group-admin tools are deliberately not
    checked. `tests/test_peer_allowlist.py` fails on a registered tool with a
    peer-naming parameter that is not classified.

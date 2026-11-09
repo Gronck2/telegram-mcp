@@ -955,16 +955,38 @@ def normalize_username(username: str) -> str:
     return clean.strip()
 
 
-def _resolved_peer_details(users, chats, peer_id) -> Dict[str, Any]:
-    """Fields describing the first resolved user or chat; public fields only outside read."""
-    target = (users or chats or [None])[0]
+def _resolved_peer_target(users, chats, peer):
+    """The user or chat that ``peer`` (result.peer) points to, or None if not in the result."""
+    if isinstance(peer, types.PeerUser):
+        return next((u for u in users or [] if getattr(u, "id", None) == peer.user_id), None)
+    if isinstance(peer, (types.PeerChat, types.PeerChannel)):
+        try:
+            want = utils.get_peer_id(peer)
+        except Exception:
+            return None
+        for c in chats or []:
+            try:
+                if get_marked_id(c) == want:
+                    return c
+            except Exception:
+                continue
+    return None
+
+
+def _resolved_peer_details(users, chats, peer_id, identifier=None, peer=None) -> Dict[str, Any]:
+    """Fields describing the peer the lookup resolved to; public fields only outside read.
+
+    The target is picked by ``peer`` (not the first raw element), so ``identifier``
+    is only ever applied to the entity Telegram resolved that string to.
+    """
+    target = _resolved_peer_target(users, chats, peer)
     if target is None:
         return {}
-    if not peer_allowed(target):
+    if not peer_allowed(target, identifier=identifier):
         # No phone, member counts or other detail for a peer outside read access.
         return public_view(target)
-    if users:
-        u = users[0]
+    if isinstance(peer, types.PeerUser):
+        u = target
         return {
             "id": getattr(u, "id", peer_id),
             "first_name": sanitize_user_content(getattr(u, "first_name", None) or ""),
@@ -973,7 +995,7 @@ def _resolved_peer_details(users, chats, peer_id) -> Dict[str, Any]:
             "is_bot": bool(getattr(u, "bot", False)),
             "verified": bool(getattr(u, "verified", False)),
         }
-    c = chats[0]
+    c = target
     return {
         "id": get_marked_id(c),
         "title": sanitize_user_content(getattr(c, "title", None) or ""),
@@ -1026,7 +1048,11 @@ async def resolve_username(username: str, account: Optional[str] = None) -> str:
 
         users = getattr(result, "users", [])
         chats = getattr(result, "chats", [])
-        entity_info.update(_resolved_peer_details(users, chats, peer_id))
+        entity_info.update(
+            _resolved_peer_details(
+                users, chats, peer_id, clean_user, getattr(result, "peer", None)
+            )
+        )
 
         return json.dumps(entity_info, indent=2, ensure_ascii=False)
     except Exception as e:
