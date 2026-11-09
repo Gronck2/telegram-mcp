@@ -8,7 +8,7 @@ import pytest
 from telethon import functions, types
 
 from telegram_mcp import runtime
-from test_input_entity_guard import IMPOSTOR_ID, allow, make_client  # noqa: F401
+from test_input_entity_guard import IMPOSTOR_ID, _clean, allow, make_client  # noqa: F401
 
 PHONE = "+7999123"
 NOW = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
@@ -56,8 +56,8 @@ async def test_phone_caller_resolves_by_phone_row_not_name(monkeypatch):
     client = _phone_client(title=PHONE, phone_row=True)
     peer = await runtime.resolve_input_entity(PHONE, client)
     assert isinstance(peer, types.InputPeerUser) and peer.user_id == 77
-    # Only Telethon's own get-me bookkeeping; no lookup of the phone itself.
-    assert [r.to_dict()["id"] for r in client.requests] == [[{"_": "InputUserSelf"}]]
+    # Answered from the phone row: no network request at all.
+    assert client.requests == []
     entity = await runtime.resolve_entity(PHONE, client)
     assert entity.id == 77  # never the impostor titled like the phone
 
