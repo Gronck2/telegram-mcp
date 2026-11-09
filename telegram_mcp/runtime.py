@@ -1202,23 +1202,60 @@ def _chat_id_tokens(
     return None
 
 
-def _parse_chat_id_token(token: str) -> Optional[Union[int, str]]:
-    """Parse one allowlist token into an ID, handle, wildcard or inert sentinel."""
+# Placeholder for an entry that is neither an id, "*" nor a username. No identifier
+# can equal it ("@" is stripped before comparing), so it matches nothing.
+_INERT_CHAT_ENTRY = "@" + CHAT_ALLOWLIST_WILDCARD
+# (variable, token) pairs already reported, so re-parsing the environment on every
+# access check does not repeat the startup warning.
+_WARNED_IGNORED_ENTRIES: set[tuple[str, str]] = set()
+
+
+def _warn_ignored_entry(token: str, source: str) -> None:
+    key = (source, token)
+    if key in _WARNED_IGNORED_ENTRIES:
+        return
+    _WARNED_IGNORED_ENTRIES.add(key)
+    # stderr, not the logger: persistent log messages must stay constant strings, and
+    # the owner needs to see which entry was dropped.
+    print(
+        f"WARNING: ignoring {source} entry {sanitize_name(token, max_length=64)!r}: "
+        "only numeric ids, '*' and usernames are accepted",
+        file=sys.stderr,
+    )
+
+
+def _parse_chat_id_token(token: str, source: str = "chat allowlist") -> Optional[Union[int, str]]:
+    """Parse one allowlist token into an ID, username, wildcard or inert sentinel.
+
+    Accepted: numeric marked ids, phone numbers (kept as before: Telethon looks them up by phone), ``*`` and usernames (``name``, ``@name``, any case,
+    ``t.me/name`` forms; stored as the lower-cased username that Telethon's
+    ``parse_username`` extracts). Anything else (free text, invite links, malformed
+    handles such as ``1abcd/``) becomes the inert sentinel with a warning: a string
+    entry could only be matched by a caller string that Telethon then resolves by chat
+    title. ``@*`` is inert as well.
+    """
     if token == CHAT_ALLOWLIST_WILDCARD:
         return CHAT_ALLOWLIST_WILDCARD
     if _NUMERIC_CHAT_ID_RE.fullmatch(token):
         return int(token)
     clean_handle = token.lstrip("@").strip().lower()
+    if not clean_handle:
+        return None
     if clean_handle == CHAT_ALLOWLIST_WILDCARD:
-        # "@*" is not the wildcard: keep a sentinel no identifier can match
-        # (identifiers are stripped of "@" before comparing) so it still
-        # counts as an entry and never widens access.
-        return "@" + CHAT_ALLOWLIST_WILDCARD
-    return clean_handle or None
+        return _INERT_CHAT_ENTRY
+    name, is_invite = utils.parse_username(clean_handle)
+    if name and not is_invite:
+        return name.lower()
+    if utils.parse_phone(token):
+        # Telethon answers a phone from the phone column, never from chat titles.
+        return clean_handle
+    _warn_ignored_entry(token, source)
+    return _INERT_CHAT_ENTRY
 
 
 def _parse_allowed_chat_ids(
     raw: Optional[Union[str, Iterable[Union[int, str]]]],
+    source: str = "chat allowlist",
 ) -> Optional[set[Union[int, str]]]:
     """Parse TELEGRAM_ALLOWED_CHAT_IDS into a set of allowed marked IDs and usernames.
 
@@ -1237,13 +1274,15 @@ def _parse_allowed_chat_ids(
     e.g. TELEGRAM_ALLOWED_READ_CHATS=* with a narrow write list). ``@*`` is not
     the wildcard. A non-blank value with no valid entry yields an empty set
     (allowlist enabled, deny all); blank or empty input yields None (unset).
+    Other entries (free text, invite links, malformed handles) are ignored with one
+    warning each and count as entries, so a value of only such entries denies all.
     """
     tokens = _chat_id_tokens(raw)
     if tokens is None:
         return None
     allowed: set[Union[int, str]] = set()
     for token in tokens:
-        entry = _parse_chat_id_token(token)
+        entry = _parse_chat_id_token(token, source)
         if entry is not None:
             allowed.add(entry)
 
@@ -1254,23 +1293,34 @@ def _parse_allowed_chat_ids(
 
 def _load_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
     """Load ALLOWED_CHAT_IDS from the TELEGRAM_ALLOWED_CHAT_IDS environment variable."""
-    return _parse_allowed_chat_ids(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"))
+    return _parse_allowed_chat_ids(
+        os.getenv("TELEGRAM_ALLOWED_CHAT_IDS"), "TELEGRAM_ALLOWED_CHAT_IDS"
+    )
 
 
 # Initial load from environment
 ALLOWED_CHAT_IDS = _load_allowed_chat_ids()
 
 
+def warn_ignored_chat_allowlist_entries() -> None:
+    """Parse all three allowlist variables once so ignored entries are reported at startup."""
+    for var in ("TELEGRAM_ALLOWED_CHAT_IDS", *_CHAT_ACCESS_ENV.values()):
+        _parse_allowed_chat_ids(os.getenv(var), var)
+
+
+warn_ignored_chat_allowlist_entries()
+
+
 def get_effective_allowed_chat_ids() -> Optional[set[Union[int, str]]]:
     """Return TELEGRAM_ALLOWED_CHAT_IDS (read and write access), or None if unset."""
     env_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS")
     if env_raw is not None:
-        return _parse_allowed_chat_ids(env_raw)
+        return _parse_allowed_chat_ids(env_raw, "TELEGRAM_ALLOWED_CHAT_IDS")
     return ALLOWED_CHAT_IDS
 
 
 def _mode_allowed_chat_ids(access: str) -> Optional[set[Union[int, str]]]:
-    return _parse_allowed_chat_ids(os.getenv(_CHAT_ACCESS_ENV[access]))
+    return _parse_allowed_chat_ids(os.getenv(_CHAT_ACCESS_ENV[access]), _CHAT_ACCESS_ENV[access])
 
 
 def get_chat_allowlist(access: str) -> Optional[set[Union[int, str]]]:
@@ -2558,7 +2608,9 @@ def _is_malformed_handle(identifier: Any) -> bool:
     only the display-name column could answer. Self references, phones, ids and invite
     links are not usernames either, but Telethon answers them without the name column,
     so they are exempt. Plain free text (``My Group``) cannot match an allowlist entry
-    by string and is left to the id check on the resolved entity.
+    by string, by construction: ``_parse_chat_id_token`` keeps only ids, ``*`` and valid
+    usernames, and turns every other entry into an inert one. It is left to the id check
+    on the resolved entity.
     """
     if not isinstance(identifier, str):
         return False
