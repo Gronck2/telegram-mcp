@@ -1838,28 +1838,22 @@ async def test_get_participants_toolerrors_are_all_recorded_with_the_real_kind(m
 
 
 @pytest.mark.asyncio
-async def test_toolerror_raised_by_a_tool_body_is_recorded_internal_only_through_fan_out(
+async def test_toolerror_raised_by_a_tool_body_is_recorded_internal_in_both_modes(
     monkeypatch, raise_probe
 ):
-    """Documents the single-account / fan-out difference for a ToolError nothing recorded."""
+    """Single-account and fan-out agree for a ToolError nothing recorded."""
     single = await probe_call(monkeypatch, ["one"], "toolerror")
     multi = await probe_call(monkeypatch, ["a", "b"], "toolerror")
     recorded = await probe_call(monkeypatch, ["one"], "recorded")
     assert recorded.meta == {META: {"kind": "internal"}}
     assert multi.meta[META]["kind"] == "internal"
     assert single.isError is True
-    assert single.meta == {META: {"kind": "invalid_argument"}}  # see the xfail below
+    assert single.meta == {META: {"kind": "internal"}}
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="an unrecorded raised ToolError / escaped exception is reported as invalid_argument "
-    "in single-account mode (fan-out says internal): an internal failure that skipped "
-    "log_and_format_error invites a pointless retry with different arguments",
-)
 @pytest.mark.parametrize("mode", ["toolerror", "runtime"])
-async def test_unrecorded_internal_failure_should_be_internal(monkeypatch, raise_probe, mode):
+async def test_unrecorded_internal_failure_is_internal(monkeypatch, raise_probe, mode):
     result = await probe_call(monkeypatch, ["one"], mode)
     assert result.meta == {META: {"kind": "internal"}}
 

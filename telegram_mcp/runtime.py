@@ -290,6 +290,36 @@ def _apply_structured_error(result, recorder: _ErrorRecorder, timed_out: bool) -
         result.isError = True
 
 
+def _install_unrecorded_failure_hook() -> None:
+    """Classify a tool failure that nothing recorded (structured errors only).
+
+    A ToolError that no ``record_tool_error`` call preceded is either FastMCP rejecting
+    the call (unknown tool, arguments failing schema validation: ``invalid_argument``)
+    or a failure that skipped ``log_and_format_error`` (an escaped exception or a raw
+    ToolError: classified from the underlying cause, ``internal`` when generic). The
+    behaviour is identical for single-account and fan-out calls.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    manager = mcp._tool_manager
+    original_call_tool = manager.call_tool
+
+    async def call_tool(name, *args, **kwargs):
+        try:
+            return await original_call_tool(name, *args, **kwargs)
+        except ToolError as exc:
+            recorder = _error_recorder.get()
+            if recorder is not None and not recorder.entries:
+                cause = exc.__cause__
+                if manager.get_tool(name) is None or isinstance(cause, PydanticValidationError):
+                    record_tool_error("invalid_argument")
+                else:
+                    record_tool_error(**classify_error(cause or exc))
+            raise
+
+    manager.call_tool = call_tool
+
+
 def _install_annotation_hook() -> None:
     from mcp.types import CallToolRequest, ServerResult, CallToolResult
 
@@ -347,6 +377,7 @@ def _install_annotation_hook() -> None:
 
 
 _install_annotation_hook()
+_install_unrecorded_failure_hook()
 
 
 _EXPOSED_TOOLS_MODES = {"all", "read-only"}

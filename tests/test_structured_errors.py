@@ -203,10 +203,30 @@ async def test_tool_error_path_carries_kind(single, on):
 
 
 @pytest.mark.asyncio
-async def test_unrecorded_toolerror_is_invalid_argument(single, on):
+async def test_unrecorded_toolerror_is_internal(single, on):
     result = await call(mode="bare_toolerror", account="one")
     assert result.isError is True
+    assert result.meta == {META: {"kind": "internal"}}
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_failure_is_invalid_argument(single, on):
+    result = await call(mode=["not", "a", "string"], account="one")
+    assert result.isError is True
     assert result.meta == {META: {"kind": "invalid_argument"}}
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_is_invalid_argument(single, on):
+    result = await call("zz_no_such_tool", mode="x")
+    assert result.isError is True
+    assert result.meta == {META: {"kind": "invalid_argument"}}
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_failure_off_has_no_meta(single, off):
+    result = await call(mode="bare_toolerror", account="one")
+    assert result.isError is True and result.meta is None
 
 
 @pytest.mark.asyncio
