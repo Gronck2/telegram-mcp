@@ -1,0 +1,26 @@
+# Keep host bytecode, secrets and VCS data out of the image build context.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.env
+.env.*
+**/*.session
+**/*.session-journal
+**/*.session.*
+.venv/
+.git/
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+*.log
+transcript_cache/
+telegram_sessions/
+docs/
+screenshots/
+examples/
+skills/

@@ -218,6 +218,41 @@ def _configure_transport_security() -> None:
     )
 
 
+_ROOTS_GUARDED_TOOLS = (
+    "send_file",
+    "send_album",
+    "upload_file",
+    "send_voice",
+    "send_sticker",
+    "set_profile_photo",
+    "edit_chat_photo",
+    "download_media",
+    "export_chat_history",
+    "export_unread_messages",
+    "open_photo",
+    "preview_custom_emoji",
+)
+
+
+def _warn_unrooted_network_transport(transport: str) -> None:
+    """Warn when an unauthenticated network transport has no server roots.
+
+    Without server roots any caller's MCP Roots decide which paths the file
+    tools may touch (see docs/adr/0004).
+    """
+    if transport == "stdio" or _runtime.SERVER_ALLOWED_ROOTS:
+        return
+    registered = {tool.name for tool in _runtime.mcp._tool_manager.list_tools()}
+    if not registered.intersection(_ROOTS_GUARDED_TOOLS):
+        return
+    print(
+        f"WARNING: {transport} transport has no authentication and no server allowed "
+        "roots are set; every client's MCP Roots decide file access. Set "
+        "TELEGRAM_ALLOWED_ROOTS (optionally with TELEGRAM_SERVER_ROOTS_ONLY=1).",
+        file=sys.stderr,
+    )
+
+
 async def _serve(transport: str) -> None:
     """Run the MCP server on the selected transport.
 
@@ -289,6 +324,8 @@ async def _main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        _warn_unrooted_network_transport(transport)
 
         # Startup log with host:port for HTTP/SSE transports
         if transport in ("http", "sse"):

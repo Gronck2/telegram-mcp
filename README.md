@@ -751,7 +751,19 @@ Allowed roots can come from:
 
 Security behavior:
 
-- Client MCP Roots replace server CLI roots when available.
+- Server roots are a ceiling for client MCP Roots. When any server root is
+  configured (`TELEGRAM_ALLOWED_ROOTS` or CLI arguments), client Roots can only
+  narrow them: a client root that equals, or lies inside, a server root is kept
+  (and only the kept roots are effective). A client root that is an ancestor of
+  a server root (for example `file:///`) or a symlink resolving outside is
+  dropped, not clipped. If none of the client's roots survives, file tools are
+  denied outright with a dedicated message, and
+  `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK` does not apply to that case. The same
+  narrowing covers the bare-path recovery below. With no server roots, the
+  client Roots decide as before, so on a shared HTTP/SSE deployment (the
+  endpoint is unauthenticated) always set `TELEGRAM_ALLOWED_ROOTS`
+  (optionally with `TELEGRAM_SERVER_ROOTS_ONLY=1`); the server logs a startup warning otherwise.
+  See `docs/adr/0004-server-roots-ceiling-for-client-roots.md`.
 - Some clients (notably Cursor) return workspace roots as bare absolute paths
   instead of `file://` URIs. That breaks MCP SDK validation of `list_roots`;
   the server recovers those absolute paths from the validation error so
@@ -790,8 +802,9 @@ proxy) and configure a server allowed root:
 Both URLs carry an HMAC signature and stay inside the first server allowed root.
 Each expires after an hour or when the server restarts, and an upload URL takes
 one upload. Uploads land in `<first_root>/uploads/` and are deleted two hours
-later. Client MCP Roots name the client's own disk, so such a deployment
-usually also sets `TELEGRAM_SERVER_ROOTS_ONLY=1`.
+later. Client MCP Roots name the client's own disk and can only narrow the
+server allowed roots, so such a deployment usually also sets
+`TELEGRAM_SERVER_ROOTS_ONLY=1`.
 
 Run with allowed roots via environment variable:
 
@@ -974,13 +987,29 @@ Run one long-lived container serving streamable HTTP, and point every MCP
 client at it (see [Transports](#transports) for client registration):
 
 ```bash
+# The transcript cache bind mount must exist and be writable by uid 1000
+# (appuser) before the first run; otherwise Docker creates it owned by root.
+mkdir -p ./transcript_cache && sudo chown 1000:1000 ./transcript_cache
+
 docker run -d --name telegram-mcp --restart unless-stopped \
   --env-file .env \
   -e MCP_TRANSPORT=http \
   -e MCP_HOST=0.0.0.0 \
+  -e TELEGRAM_ALLOWED_ROOTS=/app/data/files \
+  -e TELEGRAM_AUDIT_LOG=/home/appuser/.local/state/telegram-mcp/audit.log \
+  -v telegram_files:/app/data/files \
+  -v telegram_state:/home/appuser/.local/state \
+  -v "$PWD/transcript_cache:/app/data/transcripts" \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges:true \
   -p 127.0.0.1:8765:8765 \
   telegram-mcp:latest
 ```
+
+`TELEGRAM_ALLOWED_ROOTS` sets the server root that is the ceiling for client
+MCP Roots (a client can only narrow it; see
+`docs/adr/0004-server-roots-ceiling-for-client-roots.md`). Without it the
+unauthenticated endpoint would trust whatever roots a client announces.
 
 `MCP_HOST=0.0.0.0` binds inside the container so the published port works;
 `-p 127.0.0.1:8765:8765` keeps the server reachable only from the local
@@ -1099,7 +1128,7 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
 - **Invalid API credentials:** verify `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` at [my.telegram.org/apps](https://my.telegram.org/apps).
 - **Database is locked:** make sure no other process is using the same file session.
 - **`AuthKeyDuplicatedError` / "Another telegram-mcp process is already connected with this session":** two processes tried to connect the same Telegram session at once (e.g. an MCP client restarted the connector before the old process exited), which Telegram rejects and can invalidate the session for both. The server now takes an exclusive lock per session before connecting; a second concurrent launch waits briefly (default 20s, override with `TELEGRAM_LOCK_GRACE_SECONDS`) for the first to release it and otherwise exits without ever calling `connect()`, instead of racing into a duplicate connection. Retry once only one instance is running — the refusal names the PID holding the lock. If several instances on this host are meant to share one session (all reaching Telegram from the same IP), set `TELEGRAM_SESSION_LOCK=shared`; see [Sharing one session from one host](#sharing-one-session-from-one-host).
-- **File tools are disabled:** pass allowed roots or configure MCP Roots in your client.
+- **File tools are disabled:** pass allowed roots or configure MCP Roots in your client. If server roots are set, the client's MCP Roots must lie inside them.
 - **File tools wait for `roots/list`:** configure server roots and set `TELEGRAM_SERVER_ROOTS_ONLY=1`.
 - **Path rejected:** ensure the path is inside an allowed root and does not use traversal or wildcard patterns.
 - **Auth errors after password changes:** regenerate your session string.

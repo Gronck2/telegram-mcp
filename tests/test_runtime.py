@@ -1516,8 +1516,10 @@ def test_coerce_paths_from_list_roots_validation_error_recovers_windows_paths():
 
     assert any(item.get("type") == "url_scheme" for item in exc_info.value.errors())
 
+    # The path does not exist here, and recovery resolves strictly (task 0011), so
+    # it is skipped rather than admitted lexically; it still reached the branch.
     recovered = runtime._coerce_paths_from_list_roots_validation_error(exc_info.value)
-    assert recovered == [Path(windows_root).expanduser().resolve()]
+    assert recovered == []
 
 
 @pytest.mark.asyncio
@@ -1708,9 +1710,10 @@ async def test_server_roots_only_keeps_client_roots_without_server_roots(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_client_roots_still_replace_server_roots_by_default(tmp_path, monkeypatch):
+async def test_client_roots_narrow_server_roots_by_default(tmp_path, monkeypatch):
+    # Task 0011: client roots narrow (not replace) the server roots.
     server_root = tmp_path / "server"
-    client_root = tmp_path / "client"
+    client_root = server_root / "client"
     server_root.mkdir()
     client_root.mkdir()
     monkeypatch.setattr(runtime, "SERVER_ALLOWED_ROOTS", [server_root.resolve()])
@@ -1721,6 +1724,15 @@ async def test_client_roots_still_replace_server_roots_by_default(tmp_path, monk
     )
     assert status == runtime.ROOTS_STATUS_READY
     assert roots == [client_root.resolve()]
+
+    # A client root outside the server root is dropped (deny-all), not honoured.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    roots, status = await runtime._get_effective_allowed_roots_with_status(
+        _ctx_with_roots([SimpleNamespace(uri=outside.as_uri())])
+    )
+    assert roots == []
+    assert status == runtime.ROOTS_STATUS_CLIENT_OUTSIDE_SERVER
 
 
 def test_get_file_extension_overrides_rejects_duplicate_tool_name():

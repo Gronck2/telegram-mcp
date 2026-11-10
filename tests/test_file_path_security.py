@@ -182,9 +182,10 @@ async def test_symlinks_that_stay_inside_root_resolve_to_their_target(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
+async def test_client_roots_narrow_server_allowlist(tmp_path, monkeypatch):
+    # Task 0011: a client root only counts when it lies inside a server root.
     server_root = (tmp_path / "server_root").resolve()
-    client_root = (tmp_path / "client_root").resolve()
+    client_root = (server_root / "client_root").resolve()
     server_root.mkdir(parents=True)
     client_root.mkdir(parents=True)
 
@@ -205,6 +206,17 @@ async def test_client_roots_replace_server_allowlist(tmp_path, monkeypatch):
     )
     assert error is None
     assert resolved == client_file.resolve()
+
+    # A client root outside the server root is dropped, not honoured.
+    outside_root = (tmp_path / "outside").resolve()
+    outside_root.mkdir()
+    (outside_root / "o.txt").write_text("o", encoding="utf-8")
+    ctx_outside = _DummyContext([types.Root(uri=outside_root.as_uri())])
+    assert await main._get_effective_allowed_roots(ctx_outside) == []
+    resolved, error = await main._resolve_readable_file_path(
+        raw_path=str(outside_root / "o.txt"), ctx=ctx_outside, tool_name="send_file"
+    )
+    assert resolved is None and error
 
 
 @pytest.mark.asyncio

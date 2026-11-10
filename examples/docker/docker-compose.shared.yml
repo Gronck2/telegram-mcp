@@ -10,8 +10,29 @@ services:
     environment:
       MCP_TRANSPORT: http
       MCP_HOST: 0.0.0.0
+      # Server allowed roots are the ceiling for client MCP Roots (docs/adr/0004).
+      # The endpoint is unauthenticated, so keep a server root set.
+      # ${...} is filled from the shell or examples/docker/.env, not from the
+      # env_file below; override with `TELEGRAM_ALLOWED_ROOTS=... docker compose
+      # up` or `docker compose --env-file ../../.env up`.
+      TELEGRAM_ALLOWED_ROOTS: ${TELEGRAM_ALLOWED_ROOTS:-/app/data/files}
+      TELEGRAM_AUDIT_LOG: /home/appuser/.local/state/telegram-mcp/audit.log
+    # The endpoint is unauthenticated - publish on localhost only.
     ports:
       - "127.0.0.1:8765:8765"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ../../transcript_cache:/app/data/transcripts
+      - telegram_state:/home/appuser/.local/state
+      - telegram_files:/app/data/files
     restart: unless-stopped
+
+volumes:
+  telegram_state:
+  telegram_files:

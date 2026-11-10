@@ -6,7 +6,8 @@ FROM python:3.13-alpine AS base
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONNOUSERSITE=1
 
 # =============================================================================
 # Builder stage: build wheels / dependencies
@@ -49,17 +50,24 @@ COPY --from=builder /install /usr/local
 COPY main.py sanitize.py ./
 COPY telegram_mcp ./telegram_mcp
 
-# Create non-root user and setup directories
+# Create non-root user and the writable data directories. /app itself (code and
+# any __pycache__) stays root-owned and read-only for appuser, so a file tool
+# can never overwrite code that runs on the next start. Only these directories
+# are owned by appuser; named volumes copy this ownership on first use.
 RUN adduser --disabled-password --gecos "" appuser && \
-    mkdir -p /app/data/transcripts && \
-    chown -R appuser:appuser /app
+    mkdir -p /app/data/transcripts /app/data/files \
+        /home/appuser/.local/state/telegram-mcp && \
+    chown -R appuser:appuser /app/data /home/appuser
 
 USER appuser
 
-# Runtime environment variables (to be supplied at run/container start)
+# Runtime environment variables (to be supplied at run/container start). The session
+# file and the deletion audit log live on the state directory because /app is
+# read-only for appuser (and the root filesystem is read-only under compose).
 ENV TELEGRAM_API_ID="" \
     TELEGRAM_API_HASH="" \
-    TELEGRAM_SESSION_NAME="telegram_mcp_session" \
+    TELEGRAM_SESSION_NAME="/home/appuser/.local/state/telegram-mcp/telegram_mcp_session" \
+    TELEGRAM_AUDIT_LOG="/home/appuser/.local/state/telegram-mcp/audit.log" \
     TELEGRAM_SESSION_STRING=""
 
 CMD ["python", "main.py"]
